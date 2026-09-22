@@ -9,9 +9,20 @@ export function authHeader(token?: string) {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-/** supertest wrapper that attaches the auth header (defaults to no token). */
+/**
+ * supertest wrapper that attaches the auth header. Returns method helpers because
+ * supertest's request object only exposes `.set()` after a method is chosen.
+ */
 export function authed(app: Express, token?: string) {
-  return request(app).set(authHeader(token));
+  const agent = request(app);
+  const headers = authHeader(token);
+  return {
+    get: (url: string) => agent.get(url).set(headers),
+    post: (url: string) => agent.post(url).set(headers),
+    put: (url: string) => agent.put(url).set(headers),
+    patch: (url: string) => agent.patch(url).set(headers),
+    delete: (url: string) => agent.delete(url).set(headers),
+  };
 }
 
 let counter = 0;
