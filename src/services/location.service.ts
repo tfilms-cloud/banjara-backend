@@ -19,6 +19,15 @@ export type GeoPoint = {
   coordinates: [number, number];
 };
 
+export type PlaceSuggestion = {
+  name: string;
+  address: StructuredAddress;
+  latitude: number;
+  longitude: number;
+  location: GeoPoint;
+  source: 'curated' | 'nominatim' | 'photon';
+};
+
 function assertValidPoint(location: GeoPoint) {
   if (location.type !== 'Point') {
     throw new AppError('GeoJSON type must be Point', 422);
@@ -197,7 +206,7 @@ export async function searchPlaces(q: string, limit = 8) {
     remaining > 0 ? searchNominatim(query, Math.min(4, remaining + 1)).catch(() => []) : Promise.resolve([]),
   ]);
 
-  const merged = [...curated];
+  const merged: PlaceSuggestion[] = [...curated];
   const seen = new Set(
     curated.map((p) => normalizeKey(`${p.name}|${p.latitude.toFixed(3)}|${p.longitude.toFixed(3)}`))
   );
