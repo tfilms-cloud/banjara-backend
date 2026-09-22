@@ -16,6 +16,12 @@ export const createHotelSchema = z.object({
   priceFrom: z.number().optional(),
 });
 
+export const updateHotelSchema = createHotelSchema.partial().extend({
+  country: z.string().optional(),
+  phone: z.string().optional(),
+  email: z.string().email().optional(),
+});
+
 export const searchHotelSchema = z.object({
   destination: z.string().optional(),
   checkIn: z.string().optional(),

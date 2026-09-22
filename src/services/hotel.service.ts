@@ -322,10 +322,46 @@ export async function getHotel(id: string) {
   return assertFound(await Hotel.findById(id).populate('providerId'), 'Hotel not found');
 }
 
+/**
+ * Hotel fields a provider may change. Approval / verification / moderation fields
+ * (`approvalStatus`, `isVerified`, `status`, `rejectionReason`, `rating`, `reviewCount`)
+ * are absent on purpose — only the admin approve/reject/suspend routes may set them.
+ * An allow-list is used instead of a deny-list so a newly added sensitive schema field
+ * fails closed.
+ */
+const HOTEL_PROVIDER_FIELDS = [
+  'name',
+  'description',
+  'hotelType',
+  'address',
+  'city',
+  'country',
+  'phone',
+  'email',
+  'amenities',
+  'images',
+  'checkInTime',
+  'checkOutTime',
+  'cancellationPolicy',
+  'priceFrom',
+] as const;
+
 export async function updateHotel(providerId: string, id: string, patch: Record<string, unknown>) {
   const hotel = assertFound(await Hotel.findById(id), 'Hotel not found');
   if (hotel.providerId.toString() !== providerId) throw new AppError('Forbidden', 403);
-  Object.assign(hotel, patch);
+
+  const update: Record<string, unknown> = {};
+  for (const field of HOTEL_PROVIDER_FIELDS) {
+    if (patch[field] !== undefined) update[field] = patch[field];
+  }
+  if (typeof patch.latitude === 'number' && typeof patch.longitude === 'number') {
+    update.location = {
+      type: 'Point',
+      coordinates: [patch.longitude, patch.latitude],
+    };
+  }
+
+  Object.assign(hotel, update);
   await hotel.save();
   return hotel;
 }

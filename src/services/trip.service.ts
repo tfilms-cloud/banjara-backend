@@ -342,10 +342,38 @@ export async function getTrip(id: string) {
   return trip;
 }
 
+/**
+ * Trip fields a provider may change. `status`, the seat counters, `seatLayout`,
+ * `providerId` and `vehicleId` are system/admin-managed and deliberately excluded.
+ */
+const TRIP_PROVIDER_FIELDS = [
+  'routeId',
+  'origin',
+  'destination',
+  'departureDate',
+  'departureTime',
+  'arrivalDate',
+  'arrivalTime',
+  'pickupPoints',
+  'dropoffPoints',
+  'price',
+  'amenities',
+  'description',
+  'journeyType',
+  'returnDate',
+  'returnTime',
+] as const;
+
 export async function updateTrip(providerId: string, id: string, patch: Record<string, unknown>) {
   const trip = assertFound(await Trip.findById(id), 'Trip not found');
   if (trip.providerId.toString() !== providerId) throw new AppError('Forbidden', 403);
-  Object.assign(trip, patch);
+
+  const update: Record<string, unknown> = {};
+  for (const field of TRIP_PROVIDER_FIELDS) {
+    if (patch[field] !== undefined) update[field] = patch[field];
+  }
+
+  Object.assign(trip, update);
   await trip.save();
   return trip;
 }

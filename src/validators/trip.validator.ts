@@ -19,6 +19,28 @@ export const createTripSchema = z.object({
   returnTime: z.string().optional(),
 });
 
+/**
+ * Provider-editable trip fields. Moderation/system fields (`status`, seat counters,
+ * `seatLayout`, `providerId`, `vehicleId`) are deliberately absent.
+ */
+export const updateTripSchema = z.object({
+  routeId: z.string().optional(),
+  origin: z.string().min(2).optional(),
+  destination: z.string().min(2).optional(),
+  departureDate: z.string().min(8).optional(),
+  departureTime: z.string().min(4).optional(),
+  arrivalDate: z.string().optional(),
+  arrivalTime: z.string().optional(),
+  pickupPoints: z.array(z.string()).optional(),
+  dropoffPoints: z.array(z.string()).optional(),
+  price: z.coerce.number().positive().optional(),
+  amenities: z.array(z.string()).optional(),
+  description: z.string().optional(),
+  journeyType: z.enum(['one_way', 'round_trip']).optional(),
+  returnDate: z.string().optional(),
+  returnTime: z.string().optional(),
+});
+
 export const searchTripSchema = z.object({
   origin: z.string().optional(),
   destination: z.string().optional(),
