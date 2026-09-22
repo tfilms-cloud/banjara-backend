@@ -5,6 +5,7 @@ import { Booking } from '../models/Booking';
 import { ProviderProfile, type IHotelDetails, type IProviderProfile } from '../models/ProviderProfile';
 import { AppError, assertFound } from '../utils/AppError';
 import { getPagination, paginatedResult } from '../utils/pagination';
+import { log } from '../utils/logger';
 import { assertApprovedProvider } from './provider.service';
 
 export function bookableHotelFilter(): Record<string, unknown> {
@@ -703,12 +704,10 @@ export async function reserveRoomsForRange(
       await releaseSpecificDates(roomId, reservedDates, roomsNeeded).catch((rollbackError) => {
         // A failed rollback means inventory is now wrong and a human must look at it.
         // Log loudly; still re-throw the original error to the caller.
-        console.error('[hotel] inventory rollback failed', {
-          roomId,
-          dates: reservedDates,
-          roomsNeeded,
-          error: rollbackError,
-        });
+        log().error(
+          { roomId, dates: reservedDates, roomsNeeded, err: rollbackError },
+          '[hotel] inventory rollback failed'
+        );
       });
     }
     throw error;

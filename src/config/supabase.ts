@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { env } from './env';
 import { AppError } from '../utils/AppError';
+import { logger } from '../utils/logger';
 import { sniffImageType } from '../utils/imageSignature';
 
 export type UploadFolder = 'avatars' | 'vehicles' | 'hotels' | 'rooms' | 'logos' | 'chat';
@@ -98,7 +99,7 @@ async function ensureBucket(client: SupabaseClient) {
 
   const { data: buckets, error: listError } = await client.storage.listBuckets();
   if (listError) {
-    console.error('[supabase] listBuckets failed:', listError);
+    logger.error({ err: listError }, '[supabase] listBuckets failed');
     throw new AppError(describeStorageError(listError), 502);
   }
 
@@ -112,7 +113,7 @@ async function ensureBucket(client: SupabaseClient) {
     if (createError) {
       const msg = createError.message?.toLowerCase() ?? '';
       if (!msg.includes('already') && !msg.includes('exists')) {
-        console.error('[supabase] createBucket failed:', createError);
+        logger.error({ err: createError }, '[supabase] createBucket failed');
         throw new AppError(describeStorageError(createError), 502);
       }
     }
@@ -123,7 +124,7 @@ async function ensureBucket(client: SupabaseClient) {
       allowedMimeTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'],
     });
     if (updateError) {
-      console.warn('[supabase] could not make bucket public:', updateError.message);
+      logger.warn({ err: updateError }, '[supabase] could not make bucket public');
     }
   }
 
@@ -175,7 +176,7 @@ export async function uploadImageBuffer(input: {
   });
 
   if (error) {
-    console.error('[supabase] upload failed:', error);
+    logger.error({ err: error }, '[supabase] upload failed');
     const lower = (error.message || '').toLowerCase();
     if (lower.includes('bucket') && lower.includes('not found')) {
       bucketReady = false;
@@ -186,7 +187,7 @@ export async function uploadImageBuffer(input: {
         cacheControl: '3600',
       });
       if (retry.error) {
-        console.error('[supabase] upload retry failed:', retry.error);
+        logger.error({ err: retry.error }, '[supabase] upload retry failed');
         throw new AppError(describeStorageError(retry.error), 502);
       }
     } else {

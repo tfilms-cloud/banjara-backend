@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import { env } from './env';
+import { logger } from '../utils/logger';
 
 /**
  * Whether the booking flow is wrapped in a MongoDB transaction. It currently is not —
@@ -32,16 +33,16 @@ async function assertTransactionCapability(): Promise<void> {
     'Booking consistency currently relies on compensating actions. Use a replica set in production.';
 
   if (TRANSACTIONS_REQUIRED && env.NODE_ENV === 'production') {
-    console.error(message);
+    logger.error(message);
     process.exit(1);
   }
-  console.warn(message);
+  logger.warn(message);
 }
 
 export async function connectDatabase(): Promise<typeof mongoose> {
   mongoose.set('strictQuery', true);
   const connection = await mongoose.connect(env.MONGODB_URI);
-  console.log(`MongoDB connected: ${connection.connection.host}/${connection.connection.name}`);
+  logger.info(`MongoDB connected: ${connection.connection.host}/${connection.connection.name}`);
   await assertTransactionCapability();
   return connection;
 }

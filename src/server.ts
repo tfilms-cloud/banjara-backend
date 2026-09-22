@@ -2,25 +2,47 @@ import http from 'http';
 import { createApp } from './app';
 import { connectDatabase, disconnectDatabase } from './config/database';
 import { env } from './config/env';
+import { logger } from './utils/logger';
 import { initSocket } from './sockets/socket';
+
+const SHUTDOWN_TIMEOUT_MS = 10_000;
 
 async function bootstrap() {
   await connectDatabase();
 
   const app = createApp();
   const server = http.createServer(app);
-  initSocket(server);
+  const io = initSocket(server);
 
   server.listen(env.PORT, '0.0.0.0', () => {
-    console.log(`Banjara API listening on http://localhost:${env.PORT}`);
-    console.log(`Environment: ${env.NODE_ENV}`);
+    logger.info(`Banjara API listening on http://localhost:${env.PORT}`);
+    logger.info(`Environment: ${env.NODE_ENV}`);
   });
 
+  let shuttingDown = false;
   const shutdown = async (signal: string) => {
-    console.log(`${signal} received. Shutting down...`);
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`${signal} received. Shutting down...`);
+
+    // A hung connection must not block a deploy forever.
+    const forceExit = setTimeout(() => {
+      logger.error('Graceful shutdown timed out; forcing exit');
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    forceExit.unref();
+
     server.close(async () => {
-      await disconnectDatabase();
-      process.exit(0);
+      try {
+        await new Promise<void>((resolve) => io.close(() => resolve()));
+        await disconnectDatabase();
+        clearTimeout(forceExit);
+        logger.info('Shutdown complete');
+        process.exit(0);
+      } catch (error) {
+        logger.error({ err: error }, 'Error during shutdown');
+        process.exit(1);
+      }
     });
   };
 
@@ -29,6 +51,6 @@ async function bootstrap() {
 }
 
 bootstrap().catch((error) => {
-  console.error('Failed to start server', error);
+  logger.error({ err: error }, 'Failed to start server');
   process.exit(1);
 });

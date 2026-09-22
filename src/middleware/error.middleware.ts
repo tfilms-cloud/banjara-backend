@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import { AppError } from '../utils/AppError';
+import { log } from '../utils/logger';
 import { sendError } from '../utils/apiResponse';
 
 export function notFoundHandler(_req: Request, res: Response) {
@@ -8,6 +9,12 @@ export function notFoundHandler(_req: Request, res: Response) {
 
 export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
   if (err instanceof AppError) {
+    if (err.statusCode === 401 || err.statusCode === 403) {
+      log().warn(
+        { statusCode: err.statusCode, message: err.message },
+        'authorization rejection'
+      );
+    }
     return sendError(res, err.message, err.statusCode, err.errors);
   }
 
@@ -25,6 +32,6 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     return sendError(res, 'Invalid or expired token', 401);
   }
 
-  console.error(err);
+  log().error({ err }, 'unhandled error');
   return sendError(res, 'Internal server error', 500);
 }

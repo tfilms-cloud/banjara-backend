@@ -1,11 +1,12 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import morgan from 'morgan';
+import { randomUUID } from 'crypto';
 import mongoSanitize from 'express-mongo-sanitize';
 import cookieParser from 'cookie-parser';
 import mongoose from 'mongoose';
 import { env } from './config/env';
+import { logger, requestContext } from './utils/logger';
 import { globalRateLimiter } from './middleware/rateLimit.middleware';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { sendSuccess } from './utils/apiResponse';
@@ -71,12 +72,49 @@ export function createApp() {
     }
     next();
   });
-  app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
+  // Request id + structured access log. The id is propagated through AsyncLocalStorage so
+  // every log line emitted while handling the request carries it.
+  app.use((req, res, next) => {
+    const headerId = req.headers['x-request-id'];
+    const requestId = typeof headerId === 'string' && headerId ? headerId : randomUUID();
+    res.setHeader('x-request-id', requestId);
+    const start = Date.now();
+    requestContext.run({ requestId }, () => {
+      res.on('finish', () => {
+        logger.info(
+          {
+            requestId,
+            method: req.method,
+            url: req.originalUrl,
+            status: res.statusCode,
+            durationMs: Date.now() - start,
+          },
+          'request'
+        );
+      });
+      next();
+    });
+  });
   app.use(globalRateLimiter);
 
   app.get('/api/health', (_req, res) => {
     const dbState = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
     return sendSuccess(res, { database: dbState }, 'Banjara API is running');
+  });
+
+  // Readiness: unlike liveness this must fail when a dependency is down, so orchestrators
+  // and load balancers stop routing traffic to a process that cannot serve it.
+  app.get('/api/ready', (_req, res) => {
+    const dbState = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        success: false,
+        message: 'Banjara API is not ready',
+        data: { database: dbState },
+        errors: [],
+      });
+    }
+    return sendSuccess(res, { database: dbState }, 'Banjara API is ready');
   });
 
   app.use('/api/auth', authRoutes);

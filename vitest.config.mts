@@ -18,6 +18,7 @@ export default defineConfig({
       JWT_REFRESH_SECRET: 'test_refresh_secret_0123456789abcdef',
       PAYMENT_SECRET: 'test_payment_secret',
       CLIENT_URL: 'http://localhost:8081',
+      LOG_LEVEL: 'silent',
     },
   },
 });
