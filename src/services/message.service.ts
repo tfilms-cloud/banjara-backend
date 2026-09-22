@@ -1,7 +1,33 @@
 import { Message } from '../models/Message';
+import { Booking } from '../models/Booking';
+import { ProviderProfile } from '../models/ProviderProfile';
 import { User } from '../models/User';
 import { AppError } from '../utils/AppError';
 import { getPagination, paginatedResult } from '../utils/pagination';
+
+const MAX_MESSAGE_LENGTH = 4000;
+const MAX_ATTACHMENTS = 10;
+const MESSAGE_RATE_WINDOW_MS = 60 * 1000;
+const MESSAGE_RATE_MAX = 60;
+
+/**
+ * Process-local per-sender throttle. Like the HTTP rate limiter this does not survive a
+ * restart or span instances — see the single-instance note in the README. Structured so
+ * a shared store can replace the Map without touching call sites.
+ */
+const messageTimestamps = new Map<string, number[]>();
+
+function assertMessageRate(senderId: string) {
+  const now = Date.now();
+  const recent = (messageTimestamps.get(senderId) ?? []).filter(
+    (timestamp) => now - timestamp < MESSAGE_RATE_WINDOW_MS
+  );
+  if (recent.length >= MESSAGE_RATE_MAX) {
+    throw new AppError('Too many messages, please slow down', 429);
+  }
+  recent.push(now);
+  messageTimestamps.set(senderId, recent);
+}
 
 export function buildConversationId(a: string, b: string) {
   return [a, b].sort().join(':');
@@ -47,6 +73,31 @@ export async function sendMessage(input: {
   if (input.senderId === input.receiverId) {
     throw new AppError('Cannot message yourself', 400);
   }
+  if (String(input.message).length > MAX_MESSAGE_LENGTH) {
+    throw new AppError(`Message exceeds ${MAX_MESSAGE_LENGTH} characters`, 422);
+  }
+  if ((input.attachments?.length ?? 0) > MAX_ATTACHMENTS) {
+    throw new AppError(`A message can carry at most ${MAX_ATTACHMENTS} attachments`, 422);
+  }
+
+  assertMessageRate(input.senderId);
+
+  const receiver = await User.findById(input.receiverId).select('status');
+  if (!receiver) throw new AppError('Recipient not found', 404);
+  if (receiver.status !== 'active') throw new AppError('Recipient is not available', 400);
+
+  if (input.bookingId) {
+    const booking = await Booking.findById(input.bookingId).select('customerId providerId');
+    if (!booking) throw new AppError('Booking not found', 404);
+    const provider = await ProviderProfile.findById(booking.providerId).select('userId');
+    const participants = [booking.customerId.toString(), provider?.userId?.toString()].filter(
+      (id): id is string => Boolean(id)
+    );
+    if (!participants.includes(input.senderId) || !participants.includes(input.receiverId)) {
+      throw new AppError('Booking does not connect these users', 403);
+    }
+  }
+
   const conversationId = buildConversationId(input.senderId, input.receiverId);
   const created = await Message.create({
     conversationId,
@@ -78,9 +129,13 @@ export async function getConversation(
 }
 
 export async function listConversations(userId: string) {
+  // Bounded: only the most recent messages are scanned, and at most 100 threads are
+  // returned. Without a limit this loaded a user's entire message history.
   const messages = await Message.find({
     $or: [{ senderId: userId }, { receiverId: userId }],
-  }).sort({ createdAt: -1 });
+  })
+    .sort({ createdAt: -1 })
+    .limit(1000);
 
   const latestByConversation = new Map<string, (typeof messages)[0]>();
   for (const msg of messages) {
@@ -116,9 +171,9 @@ export async function listConversations(userId: string) {
     })
   );
 
-  return threads.sort(
-    (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-  );
+  return threads
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .slice(0, 100);
 }
 
 export async function getUnreadTotal(userId: string) {

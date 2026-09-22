@@ -16,11 +16,14 @@ import { Notification } from '../models/Notification';
 import { Message } from '../models/Message';
 import { SupportTicket } from '../models/SupportTicket';
 import { Counter } from '../models/Counter';
+import { logger } from '../utils/logger';
+import { assertDestructiveSeedAllowed } from './guards';
 
 async function clearDatabase() {
+  assertDestructiveSeedAllowed();
   await connectDatabase();
 
-  console.log('Removing all BANJARA collections (including users)...');
+  logger.info('Removing all BANJARA collections (including users)...');
 
   const results = await Promise.all([
     User.deleteMany({}),
@@ -63,15 +66,15 @@ async function clearDatabase() {
   ];
 
   labels.forEach((label, index) => {
-    console.log(`  ${label}: deleted ${results[index].deletedCount}`);
+    logger.info(`  ${label}: deleted ${results[index].deletedCount}`);
   });
 
-  console.log('Database cleared. No seed users remain.');
+  logger.info('Database cleared. No seed users remain.');
   await disconnectDatabase();
 }
 
 clearDatabase().catch(async (error) => {
-  console.error('Failed to clear database:', error);
+  logger.error({ err: error }, 'Failed to clear database');
   await disconnectDatabase().catch(() => undefined);
   process.exit(1);
 });

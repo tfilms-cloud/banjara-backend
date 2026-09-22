@@ -170,16 +170,21 @@ export async function getProviderDashboard(providerId: string) {
   const profile = assertFound(await ProviderProfile.findById(providerId), 'Provider not found');
   const today = new Date().toISOString().slice(0, 10);
 
-  const [bookings, tripsToday, rooms, earnings] = await Promise.all([
-    Booking.find({ providerId }),
-    Trip.find({ providerId, departureDate: today, status: { $nin: ['cancelled'] } }),
-    Room.find({ providerId, status: 'active' }),
-    bookingService.getProviderEarnings(providerId),
-  ]);
-
-  const pendingBookings = bookings.filter((b) => b.bookingStatus === 'pending').length;
-  const completedBookings = bookings.filter((b) => b.bookingStatus === 'completed').length;
-  const totalBookings = bookings.length;
+  const [tripsToday, rooms, earnings, totalBookings, pendingBookings, completedBookings, hotelCheckIns] =
+    await Promise.all([
+      Trip.find({ providerId, departureDate: today, status: { $nin: ['cancelled'] } }),
+      Room.find({ providerId, status: 'active' }),
+      bookingService.getProviderEarnings(providerId),
+      Booking.countDocuments({ providerId }),
+      Booking.countDocuments({ providerId, bookingStatus: 'pending' }),
+      Booking.countDocuments({ providerId, bookingStatus: 'completed' }),
+      Booking.countDocuments({
+        providerId,
+        bookingType: 'hotel',
+        'hotelBooking.checkIn': today,
+        bookingStatus: { $in: ['confirmed', 'pending'] },
+      }),
+    ]);
 
   const availableSeats = tripsToday.reduce((sum, t) => sum + t.availableSeats, 0);
   const bookedSeats = tripsToday.reduce((sum, t) => sum + t.bookedSeats, 0);
@@ -189,13 +194,6 @@ export async function getProviderDashboard(providerId: string) {
     (sum, r) => sum + Math.max(0, (r.totalRooms ?? 0) - (r.availableRooms ?? 0)),
     0
   );
-
-  const hotelCheckIns = bookings.filter(
-    (b) =>
-      b.bookingType === 'hotel' &&
-      b.hotelBooking?.checkIn === today &&
-      ['confirmed', 'pending'].includes(b.bookingStatus)
-  ).length;
 
   return {
     provider: {

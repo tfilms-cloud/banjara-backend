@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import mongoose from 'mongoose';
 import { Booking } from '../models/Booking';
 import { Trip } from '../models/Trip';
 import { ProviderProfile } from '../models/ProviderProfile';
@@ -7,6 +8,7 @@ import { AppError, assertFound } from '../utils/AppError';
 import { generateBookingNumber } from '../utils/bookingNumber';
 import { buildTicketQrDataUrl } from '../utils/qrCode';
 import { getPagination, paginatedResult } from '../utils/pagination';
+import { log } from '../utils/logger';
 import type { PaymentMethod } from '../types/booking.types';
 import * as hotelService from './hotel.service';
 import * as paymentService from './payment.service';
@@ -258,10 +260,7 @@ export async function createBooking(
     // must never mask the original error.
     if (createdPaymentId) {
       await paymentService.refundPaymentAsSystem(createdPaymentId).catch((refundError) => {
-        console.error('[booking] payment compensation failed', {
-          paymentId: createdPaymentId,
-          error: refundError,
-        });
+        log().error({ paymentId: createdPaymentId, err: refundError }, '[booking] payment compensation failed');
       });
     }
     if (createdBooking) {
@@ -269,19 +268,12 @@ export async function createBooking(
         bookingStatus: 'cancelled',
         paymentStatus: 'refunded',
       }).catch((updateError) => {
-        console.error('[booking] booking compensation failed', {
-          bookingId: createdBooking?._id.toString(),
-          error: updateError,
-        });
+        log().error({ bookingId: createdBooking?._id.toString(), err: updateError }, '[booking] booking compensation failed');
       });
     }
     if (reservedTripSeats && input.transportBooking) {
       await releaseTripSeats(input.transportBooking.tripId, reservedTripSeats).catch((releaseError) => {
-        console.error('[booking] seat release failed', {
-          tripId: input.transportBooking?.tripId,
-          seats: reservedTripSeats,
-          error: releaseError,
-        });
+        log().error({ tripId: input.transportBooking?.tripId, seats: reservedTripSeats, err: releaseError }, '[booking] seat release failed');
       });
     }
     if (reservedHotel) {
@@ -293,7 +285,7 @@ export async function createBooking(
           reservedHotel.rooms
         )
         .catch((releaseError) => {
-          console.error('[booking] room release failed', { ...reservedHotel, error: releaseError });
+          log().error({ ...reservedHotel, err: releaseError }, '[booking] room release failed');
         });
     }
     throw error;
@@ -311,10 +303,7 @@ export async function createBooking(
       data: { bookingId: booking._id.toString() },
     })
     .catch((notificationError) => {
-      console.error('[booking] confirmation notification failed', {
-        bookingId: booking._id.toString(),
-        error: notificationError,
-      });
+      log().error({ bookingId: booking._id.toString(), err: notificationError }, '[booking] confirmation notification failed');
     });
 
   return booking;
@@ -433,11 +422,6 @@ export async function getTicket(id: string, requester: { id: string; role: strin
 }
 
 export async function getProviderEarnings(providerId: string) {
-  const bookings = await Booking.find({
-    providerId,
-    bookingStatus: { $in: ['confirmed', 'completed'] },
-  });
-
   const now = new Date();
   const startOfDay = new Date(now);
   startOfDay.setHours(0, 0, 0, 0);
@@ -445,11 +429,29 @@ export async function getProviderEarnings(providerId: string) {
   startOfWeek.setDate(now.getDate() - 7);
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  const sum = (list: typeof bookings) => list.reduce((acc, b) => acc + b.totalAmount, 0);
-  const totalRevenue = sum(bookings);
-  const today = sum(bookings.filter((b) => b.createdAt >= startOfDay));
-  const thisWeek = sum(bookings.filter((b) => b.createdAt >= startOfWeek));
-  const thisMonth = sum(bookings.filter((b) => b.createdAt >= startOfMonth));
+  // Aggregated in the database rather than loading every booking into memory.
+  const [row] = await Booking.aggregate([
+    {
+      $match: {
+        providerId: new mongoose.Types.ObjectId(providerId),
+        bookingStatus: { $in: ['confirmed', 'completed'] },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalRevenue: { $sum: '$totalAmount' },
+        today: { $sum: { $cond: [{ $gte: ['$createdAt', startOfDay] }, '$totalAmount', 0] } },
+        thisWeek: { $sum: { $cond: [{ $gte: ['$createdAt', startOfWeek] }, '$totalAmount', 0] } },
+        thisMonth: { $sum: { $cond: [{ $gte: ['$createdAt', startOfMonth] }, '$totalAmount', 0] } },
+      },
+    },
+  ]);
+
+  const totalRevenue = row?.totalRevenue ?? 0;
+  const today = row?.today ?? 0;
+  const thisWeek = row?.thisWeek ?? 0;
+  const thisMonth = row?.thisMonth ?? 0;
   const platformFees = Math.round(totalRevenue * env.PLATFORM_FEE_RATE);
   const pendingPayout = Math.round(thisMonth * (1 - env.PLATFORM_FEE_RATE));
 
