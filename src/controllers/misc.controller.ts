@@ -148,7 +148,14 @@ export async function markMessagesRead(req: AuthRequest, res: Response, next: Ne
 
 export async function createSupport(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const ticket = await SupportTicket.create({ ...req.body, userId: req.user!.id });
+    const ticket = await SupportTicket.create({
+      userId: req.user!.id,
+      bookingId: req.body.bookingId,
+      category: req.body.category,
+      subject: req.body.subject,
+      message: req.body.message,
+      ...(req.body.priority ? { priority: req.body.priority } : {}),
+    });
     return sendSuccess(res, ticket, 'Support ticket created', 201);
   } catch (error) {
     next(error);

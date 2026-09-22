@@ -543,6 +543,9 @@ export async function upsertAvailability(
 }
 
 export async function blockRooms(providerId: string, roomId: string, date: string, count: number) {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new AppError('count must be a positive integer', 422);
+  }
   const room = await assertRoomOwnedByProvider(roomId, providerId);
   const snap = await getNightSnapshot(roomId, date, room);
   if (count > snap.availableRooms) throw new AppError('Not enough rooms to block', 400);
@@ -553,6 +556,9 @@ export async function blockRooms(providerId: string, roomId: string, date: strin
 }
 
 export async function unblockRooms(providerId: string, roomId: string, date: string, count: number) {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new AppError('count must be a positive integer', 422);
+  }
   await assertRoomOwnedByProvider(roomId, providerId);
   const day = assertFound(await RoomAvailability.findOne({ roomId, date }), 'Availability not found');
   const blocked = Math.max(0, day.blockedRooms - count);

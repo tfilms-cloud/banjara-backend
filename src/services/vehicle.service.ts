@@ -72,20 +72,40 @@ export async function getVehicle(id: string) {
   return assertFound(await Vehicle.findById(id), 'Vehicle not found');
 }
 
+/**
+ * Vehicle fields a provider may edit. Identity (`providerId`) and moderation/audit fields
+ * (`status`, `approvedBy`, `rejectedBy`, `suspendedBy`, and their timestamps/reasons) are
+ * admin-managed.
+ */
+const VEHICLE_PROVIDER_FIELDS = [
+  'name',
+  'type',
+  'brand',
+  'vehicleModel',
+  'year',
+  'registrationNumber',
+  'seatCount',
+  'seatConfiguration',
+  'amenities',
+  'images',
+] as const;
+
 export async function updateVehicle(providerId: string, id: string, patch: Record<string, unknown>) {
   const vehicle = assertFound(await Vehicle.findById(id), 'Vehicle not found');
   if (vehicle.providerId.toString() !== providerId) {
     throw new AppError('You cannot modify this vehicle', 403);
   }
 
-  const { status: _status, approvedBy: _a, approvedAt: _b, ...safePatch } = patch;
-  if (safePatch.totalSeats != null && safePatch.seatCount == null) {
-    safePatch.seatCount = safePatch.totalSeats;
+  const update: Record<string, unknown> = {};
+  for (const field of VEHICLE_PROVIDER_FIELDS) {
+    if (patch[field] !== undefined) update[field] = patch[field];
   }
-  delete safePatch.totalSeats;
+  if (update.seatCount == null && patch.totalSeats != null) {
+    update.seatCount = patch.totalSeats;
+  }
 
-  if (typeof safePatch.seatCount === 'number') {
-    if (!Number.isInteger(safePatch.seatCount) || safePatch.seatCount < 1) {
+  if (typeof update.seatCount === 'number') {
+    if (!Number.isInteger(update.seatCount) || update.seatCount < 1) {
       throw new AppError('Total seats must be a positive integer', 422);
     }
   }
@@ -98,7 +118,7 @@ export async function updateVehicle(providerId: string, id: string, patch: Recor
     vehicle.rejectedBy = undefined;
   }
 
-  Object.assign(vehicle, safePatch);
+  Object.assign(vehicle, update);
   await vehicle.save();
   return vehicle;
 }

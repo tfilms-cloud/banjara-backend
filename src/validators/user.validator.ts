@@ -16,3 +16,8 @@ export const userUpdateSchema = z.object({
   avatar: z.string().url().optional().or(z.literal('')),
   preferences: z.record(z.string(), z.unknown()).optional(),
 });
+
+export const passwordUpdateSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(6).max(200),
+});
