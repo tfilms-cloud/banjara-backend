@@ -1,5 +1,6 @@
 import rateLimit from 'express-rate-limit';
 import { env } from '../config/env';
+import type { AuthRequest } from './auth.middleware';
 
 const isDev = env.NODE_ENV === 'development';
 const isTest = env.NODE_ENV === 'test';
@@ -35,6 +36,21 @@ export const authRateLimiter = rateLimit({
   message: {
     success: false,
     message: 'Too many auth attempts, please try again later',
+    errors: [],
+  },
+});
+
+/** Per-user upload limiter — keyed by authenticated user id, not IP. */
+export const uploadRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isDev ? 500 : 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTest,
+  keyGenerator: (req) => (req as AuthRequest).user?.id ?? req.ip ?? 'unknown',
+  message: {
+    success: false,
+    message: 'Too many uploads, please try again later',
     errors: [],
   },
 });

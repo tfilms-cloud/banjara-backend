@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { env } from './env';
 import { AppError } from '../utils/AppError';
+import { sniffImageType } from '../utils/imageSignature';
 
 export type UploadFolder = 'avatars' | 'vehicles' | 'hotels' | 'rooms' | 'logos' | 'chat';
 
@@ -152,16 +153,23 @@ export async function uploadImageBuffer(input: {
     throw new AppError('Only image uploads are allowed', 400);
   }
 
+  // Trust the magic bytes, not the client-supplied multipart MIME type.
+  const detected = sniffImageType(input.buffer);
+  if (!detected) {
+    throw new AppError('File content is not a supported image (jpeg, png, webp, gif)', 400);
+  }
+
   const client = getSupabase();
   await ensureBucket(client);
 
   const bucket = env.SUPABASE_STORAGE_BUCKET;
-  const ext = extensionFromMime(input.mime);
+  const ext = extensionFromMime(detected);
+  // Filename is generated server-side; the client's originalname never reaches the path.
   const safeName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
   const path = `${input.folder}/${input.userId}/${safeName}`;
 
   const { error } = await client.storage.from(bucket).upload(path, input.buffer, {
-    contentType: input.mime,
+    contentType: detected,
     upsert: false,
     cacheControl: '3600',
   });
@@ -173,7 +181,7 @@ export async function uploadImageBuffer(input: {
       bucketReady = false;
       await ensureBucket(client);
       const retry = await client.storage.from(bucket).upload(path, input.buffer, {
-        contentType: input.mime,
+        contentType: detected,
         upsert: false,
         cacheControl: '3600',
       });
