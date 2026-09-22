@@ -694,12 +694,36 @@ export async function reserveRoomsForRange(
     }
   } catch (error) {
     if (reservedDates.length) {
-      await releaseRoomsForRange(roomId, checkIn, checkOut, roomsNeeded).catch(() => undefined);
+      // Roll back ONLY the nights this call actually reserved. Releasing the whole
+      // requested range would decrement nights held by other bookings (their
+      // `bookedRooms` still satisfies the guard), silently overbooking the hotel.
+      await releaseSpecificDates(roomId, reservedDates, roomsNeeded).catch((rollbackError) => {
+        // A failed rollback means inventory is now wrong and a human must look at it.
+        // Log loudly; still re-throw the original error to the caller.
+        console.error('[hotel] inventory rollback failed', {
+          roomId,
+          dates: reservedDates,
+          roomsNeeded,
+          error: rollbackError,
+        });
+      });
     }
     throw error;
   }
 
   return { room, nights, dates };
+}
+
+/** Release a specific list of nights. Only nights with at least `roomsCount` booked are touched. */
+export async function releaseSpecificDates(roomId: string, dates: string[], roomsCount: number) {
+  const room = assertFound(await Room.findById(roomId), 'Room not found');
+  for (const date of dates) {
+    await RoomAvailability.findOneAndUpdate(
+      { roomId, date, bookedRooms: { $gte: roomsCount } },
+      { $inc: { bookedRooms: -roomsCount, availableRooms: roomsCount } }
+    );
+  }
+  return { room, dates };
 }
 
 export async function releaseRoomsForRange(
@@ -708,15 +732,8 @@ export async function releaseRoomsForRange(
   checkOut: string,
   roomsCount: number
 ) {
-  const room = assertFound(await Room.findById(roomId), 'Room not found');
   const dates = datesBetween(checkIn, checkOut);
-  for (const date of dates) {
-    await RoomAvailability.findOneAndUpdate(
-      { roomId, date, bookedRooms: { $gte: roomsCount } },
-      { $inc: { bookedRooms: -roomsCount, availableRooms: roomsCount } }
-    );
-  }
-  return { room, dates };
+  return releaseSpecificDates(roomId, dates, roomsCount);
 }
 
 export async function calculateHotelSubtotal(
