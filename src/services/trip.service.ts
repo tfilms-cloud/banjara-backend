@@ -94,6 +94,17 @@ async function ensurePickupCoordinates(
   return point;
 }
 
+function isPopulatedPickupPoint(
+  value: unknown
+): value is InstanceType<typeof PickupPoint> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'latitude' in value &&
+    'longitude' in value
+  );
+}
+
 function placeFromInput(value: unknown): { name: string; latitude: number; longitude: number } {
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>;
@@ -323,8 +334,8 @@ export async function getTrip(id: string) {
   // Backfill 0,0 pickups so maps work for older free-text stops
   const pickups = Array.isArray(trip.pickupPoints) ? trip.pickupPoints : [];
   for (const point of pickups) {
-    if (point && typeof point === 'object' && 'latitude' in point) {
-      await ensurePickupCoordinates(point as InstanceType<typeof PickupPoint>);
+    if (isPopulatedPickupPoint(point)) {
+      await ensurePickupCoordinates(point);
     }
   }
 
