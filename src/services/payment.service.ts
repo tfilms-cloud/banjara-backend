@@ -71,6 +71,8 @@ async function loadVisiblePayment(id: string, actor: PaymentActor) {
 }
 
 async function applyRefund(payment: InstanceType<typeof Payment>) {
+  // Idempotent: a retried cancellation/refund must not error.
+  if (payment.status === 'refunded') return payment;
   if (payment.status !== 'paid' && payment.status !== 'pending') {
     throw new AppError('Payment cannot be refunded', 400);
   }

@@ -159,13 +159,18 @@ export async function createBooking(
     };
   }
 ) {
-  // Note: wrap in MongoDB transactions when running a replica set in production.
+  // This flow is NOT wrapped in a MongoDB transaction. Production topology is
+  // unconfirmed and a standalone node cannot run transactions, so consistency is
+  // provided by the compensating actions below. See config/database.ts for the startup
+  // capability check; the transaction path is written up as a recommendation.
   let providerId = '';
   let pricing = calcPricing(0);
   let transportBooking;
   let hotelBooking;
   let reservedTripSeats: string[] | null = null;
   let reservedHotel: { roomId: string; checkIn: string; checkOut: string; rooms: number } | null = null;
+  let createdBooking: InstanceType<typeof Booking> | null = null;
+  let createdPaymentId: string | null = null;
 
   try {
     if (input.bookingType === 'transport') {
@@ -216,7 +221,7 @@ export async function createBooking(
     }
 
     const bookingNumber = await generateBookingNumber();
-    const booking = await Booking.create({
+    createdBooking = await Booking.create({
       bookingNumber,
       customerId,
       providerId,
@@ -229,37 +234,55 @@ export async function createBooking(
     });
 
     const payment = await paymentService.createPayment({
-      bookingId: booking._id.toString(),
+      bookingId: createdBooking._id.toString(),
       customerId,
       providerId,
       amount: pricing.totalAmount,
       method: input.paymentMethod,
     });
+    createdPaymentId = payment._id.toString();
 
-    const verified = await paymentService.verifyPayment(payment._id.toString());
+    const verified = await paymentService.verifyPayment(createdPaymentId);
 
-    booking.paymentStatus = verified.status === 'paid' ? 'paid' : verified.status;
-    booking.bookingStatus = 'confirmed';
-    booking.paymentId = verified._id;
-    booking.ticketQr = buildTicketQrDataUrl(booking.bookingNumber);
-    await booking.save();
+    createdBooking.paymentStatus = verified.status === 'paid' ? 'paid' : verified.status;
+    createdBooking.bookingStatus = 'confirmed';
+    createdBooking.paymentId = verified._id;
+    createdBooking.ticketQr = buildTicketQrDataUrl(createdBooking.bookingNumber);
+    await createdBooking.save();
 
     if (input.bookingType === 'transport' && input.transportBooking) {
       await confirmTripSeats(input.transportBooking.tripId, input.transportBooking.seats);
     }
-
-    await notificationService.createNotification({
-      userId: customerId,
-      type: 'bookingConfirmed',
-      title: 'Booking confirmed',
-      message: `Your booking ${booking.bookingNumber} is confirmed.`,
-      data: { bookingId: booking._id.toString() },
-    });
-
-    return booking;
   } catch (error) {
+    // Compensate in reverse order. Best-effort: a compensation failure is logged but
+    // must never mask the original error.
+    if (createdPaymentId) {
+      await paymentService.refundPaymentAsSystem(createdPaymentId).catch((refundError) => {
+        console.error('[booking] payment compensation failed', {
+          paymentId: createdPaymentId,
+          error: refundError,
+        });
+      });
+    }
+    if (createdBooking) {
+      await Booking.findByIdAndUpdate(createdBooking._id, {
+        bookingStatus: 'cancelled',
+        paymentStatus: 'refunded',
+      }).catch((updateError) => {
+        console.error('[booking] booking compensation failed', {
+          bookingId: createdBooking?._id.toString(),
+          error: updateError,
+        });
+      });
+    }
     if (reservedTripSeats && input.transportBooking) {
-      await releaseTripSeats(input.transportBooking.tripId, reservedTripSeats).catch(() => undefined);
+      await releaseTripSeats(input.transportBooking.tripId, reservedTripSeats).catch((releaseError) => {
+        console.error('[booking] seat release failed', {
+          tripId: input.transportBooking?.tripId,
+          seats: reservedTripSeats,
+          error: releaseError,
+        });
+      });
     }
     if (reservedHotel) {
       await hotelService
@@ -269,10 +292,32 @@ export async function createBooking(
           reservedHotel.checkOut,
           reservedHotel.rooms
         )
-        .catch(() => undefined);
+        .catch((releaseError) => {
+          console.error('[booking] room release failed', { ...reservedHotel, error: releaseError });
+        });
     }
     throw error;
   }
+
+  const booking = assertFound(createdBooking, 'Booking not created');
+
+  // Non-critical side effect: a notification failure must never roll back a confirmed booking.
+  await notificationService
+    .createNotification({
+      userId: customerId,
+      type: 'bookingConfirmed',
+      title: 'Booking confirmed',
+      message: `Your booking ${booking.bookingNumber} is confirmed.`,
+      data: { bookingId: booking._id.toString() },
+    })
+    .catch((notificationError) => {
+      console.error('[booking] confirmation notification failed', {
+        bookingId: booking._id.toString(),
+        error: notificationError,
+      });
+    });
+
+  return booking;
 }
 
 export async function getBooking(id: string, requester?: { id: string; role: string; providerId?: string }) {
