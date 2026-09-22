@@ -5,6 +5,7 @@ import { Booking } from '../models/Booking';
 import { ProviderProfile, type IHotelDetails, type IProviderProfile } from '../models/ProviderProfile';
 import { AppError, assertFound } from '../utils/AppError';
 import { getPagination, paginatedResult } from '../utils/pagination';
+import { escapeRegex } from '../utils/regex';
 import { log } from '../utils/logger';
 import { assertApprovedProvider } from './provider.service';
 
@@ -237,7 +238,7 @@ export async function searchHotels(query: Record<string, unknown>) {
   const { page, limit, skip } = getPagination(query);
   const filter: Record<string, unknown> = { ...bookableHotelFilter() };
 
-  if (query.destination) filter.city = new RegExp(String(query.destination), 'i');
+  if (query.destination) filter.city = new RegExp(escapeRegex(String(query.destination)), 'i');
   if (query.hotelType) filter.hotelType = query.hotelType;
   if (query.minRating) filter.rating = { $gte: Number(query.minRating) };
   if (query.minPrice || query.maxPrice) {

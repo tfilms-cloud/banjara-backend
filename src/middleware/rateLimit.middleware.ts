@@ -40,14 +40,14 @@ export const authRateLimiter = rateLimit({
   },
 });
 
-/** Per-user upload limiter — keyed by authenticated user id, not IP. */
+/** Per-user upload limiter — keyed by authenticated user id (the route requires auth). */
 export const uploadRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: isDev ? 500 : 60,
   standardHeaders: true,
   legacyHeaders: false,
   skip: skipInTest,
-  keyGenerator: (req) => (req as AuthRequest).user?.id ?? req.ip ?? 'unknown',
+  keyGenerator: (req) => (req as AuthRequest).user?.id ?? 'anonymous',
   message: {
     success: false,
     message: 'Too many uploads, please try again later',

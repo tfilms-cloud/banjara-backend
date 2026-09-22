@@ -5,6 +5,7 @@ import { Vehicle } from '../models/Vehicle';
 import { AppError, assertFound } from '../utils/AppError';
 import { resolvePlaceCoordinates } from '../utils/geoPlaces';
 import { getPagination, paginatedResult } from '../utils/pagination';
+import { escapeRegex } from '../utils/regex';
 import { assertTransportProvider } from './provider.service';
 import mongoose from 'mongoose';
 
@@ -317,8 +318,8 @@ export async function searchTrips(query: Record<string, unknown>) {
   const { page, limit, skip } = getPagination(query);
   const filter: Record<string, unknown> = { status: { $nin: ['cancelled'] } };
 
-  if (query.origin) filter.origin = new RegExp(String(query.origin), 'i');
-  if (query.destination) filter.destination = new RegExp(String(query.destination), 'i');
+  if (query.origin) filter.origin = new RegExp(escapeRegex(String(query.origin)), 'i');
+  if (query.destination) filter.destination = new RegExp(escapeRegex(String(query.destination)), 'i');
   if (query.date) filter.departureDate = query.date;
   if (query.journeyType === 'one_way' || query.journeyType === 'round_trip') {
     filter.journeyType = query.journeyType;
