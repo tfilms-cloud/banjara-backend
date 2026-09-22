@@ -448,34 +448,46 @@ export async function getRoom(id: string) {
   return assertFound(await Room.findById(id), 'Room not found');
 }
 
+/**
+ * Room fields a provider may edit. `availableRooms`/`bookedRooms` are booking-driven and
+ * derived respectively; `hotelId`/`providerId` are identity fields.
+ */
+const ROOM_PROVIDER_FIELDS = [
+  'name',
+  'roomType',
+  'bedType',
+  'capacity',
+  'size',
+  'pricePerNight',
+  'totalRooms',
+  'amenities',
+  'breakfastIncluded',
+  'cancellationPolicy',
+  'images',
+  'status',
+] as const;
+
 export async function updateRoom(providerId: string, id: string, patch: Record<string, unknown>) {
   const room = await assertRoomOwnedByProvider(id, providerId);
-  const {
-    hotelId: _hotelId,
-    providerId: _ignoredProviderId,
-    _id: _docId,
-    id: _clientId,
-    sizeSqm,
-    quantity,
-    freeCancellation,
-    available,
-    ...rest
-  } = patch;
 
-  if (typeof sizeSqm === 'number') rest.size = sizeSqm;
-  if (typeof quantity === 'number') rest.totalRooms = quantity;
-  if (freeCancellation === true) rest.cancellationPolicy = 'Free cancellation';
-  if (freeCancellation === false) rest.cancellationPolicy = 'Non-refundable';
-  if (available === true) rest.status = 'active';
-  if (available === false) rest.status = 'inactive';
+  const update: Record<string, unknown> = {};
+  for (const field of ROOM_PROVIDER_FIELDS) {
+    if (patch[field] !== undefined) update[field] = patch[field];
+  }
+  if (typeof patch.sizeSqm === 'number') update.size = patch.sizeSqm;
+  if (typeof patch.quantity === 'number') update.totalRooms = patch.quantity;
+  if (patch.freeCancellation === true) update.cancellationPolicy = 'Free cancellation';
+  if (patch.freeCancellation === false) update.cancellationPolicy = 'Non-refundable';
+  if (patch.available === true) update.status = 'active';
+  if (patch.available === false) update.status = 'inactive';
 
-  const nextTotal = typeof rest.totalRooms === 'number' ? Number(rest.totalRooms) : room.totalRooms;
-  if (typeof rest.totalRooms === 'number') {
+  const nextTotal = typeof update.totalRooms === 'number' ? Number(update.totalRooms) : room.totalRooms;
+  if (typeof update.totalRooms === 'number') {
     const delta = nextTotal - room.totalRooms;
     room.availableRooms = Math.max(0, Math.min(nextTotal, room.availableRooms + delta));
   }
 
-  Object.assign(room, rest);
+  Object.assign(room, update);
   await room.save();
   return room;
 }
@@ -498,8 +510,6 @@ export async function upsertAvailability(
   date: string,
   patch: Partial<{
     totalRooms: number;
-    bookedRooms: number;
-    availableRooms: number;
     blockedRooms: number;
     priceOverride: number;
   }>
@@ -507,10 +517,10 @@ export async function upsertAvailability(
   const room = await assertRoomOwnedByProvider(roomId, providerId);
   const day = await RoomAvailability.findOne({ roomId, date });
   const total = patch.totalRooms ?? day?.totalRooms ?? room.totalRooms;
-  const booked = patch.bookedRooms ?? day?.bookedRooms ?? 0;
+  // `bookedRooms` is booking-driven and `availableRooms` is derived — never provider-set.
+  const booked = day?.bookedRooms ?? 0;
   const blocked = patch.blockedRooms ?? day?.blockedRooms ?? 0;
-  const available =
-    patch.availableRooms ?? Math.max(0, total - booked - blocked);
+  const available = Math.max(0, total - booked - blocked);
 
   if (available < 0 || booked + blocked > total) {
     throw new AppError('Invalid availability values', 400);
@@ -537,9 +547,7 @@ export async function blockRooms(providerId: string, roomId: string, date: strin
   if (count > snap.availableRooms) throw new AppError('Not enough rooms to block', 400);
   return upsertAvailability(providerId, roomId, date, {
     totalRooms: snap.totalRooms,
-    bookedRooms: snap.bookedRooms,
     blockedRooms: snap.blockedRooms + count,
-    availableRooms: snap.availableRooms - count,
   });
 }
 
@@ -593,12 +601,7 @@ export async function bulkUpsertAvailability(
     results.push(
       await upsertAvailability(providerId, input.roomId, date, {
         totalRooms: input.totalRooms ?? snap.totalRooms,
-        bookedRooms: snap.bookedRooms,
         blockedRooms: snap.blockedRooms,
-        availableRooms:
-          input.totalRooms != null
-            ? Math.max(0, input.totalRooms - snap.bookedRooms - snap.blockedRooms)
-            : snap.availableRooms,
         ...(input.priceOverride != null ? { priceOverride: input.priceOverride } : {}),
       })
     );

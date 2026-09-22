@@ -184,8 +184,12 @@ export async function getSupport(req: AuthRequest, res: Response, next: NextFunc
 
 export async function updateSupport(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    const update: Record<string, unknown> = {};
+    if (req.body.status !== undefined) update.status = req.body.status;
+    if (req.body.priority !== undefined) update.priority = req.body.priority;
+
     const ticket = assertFound(
-      await SupportTicket.findByIdAndUpdate(paramId(req.params.id), req.body, { new: true }),
+      await SupportTicket.findByIdAndUpdate(paramId(req.params.id), update, { new: true }),
       'Ticket not found'
     );
     return sendSuccess(res, ticket);

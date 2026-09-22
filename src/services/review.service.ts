@@ -1,8 +1,20 @@
+import mongoose from 'mongoose';
 import { Booking } from '../models/Booking';
 import { ProviderProfile } from '../models/ProviderProfile';
 import { Review } from '../models/Review';
 import { AppError, assertFound } from '../utils/AppError';
 import * as notificationService from './notification.service';
+
+async function recomputeProviderRating(providerId: mongoose.Types.ObjectId) {
+  const stats = await Review.aggregate([
+    { $match: { providerId } },
+    { $group: { _id: '$providerId', avg: { $avg: '$rating' }, count: { $sum: 1 } } },
+  ]);
+  await ProviderProfile.findByIdAndUpdate(providerId, {
+    rating: stats[0] ? Math.round(stats[0].avg * 10) / 10 : 0,
+    totalReviews: stats[0] ? stats[0].count : 0,
+  });
+}
 
 export async function createReview(
   customerId: string,
@@ -32,16 +44,7 @@ export async function createReview(
     categories: input.categories ?? {},
   });
 
-  const stats = await Review.aggregate([
-    { $match: { providerId: booking.providerId } },
-    { $group: { _id: '$providerId', avg: { $avg: '$rating' }, count: { $sum: 1 } } },
-  ]);
-  if (stats[0]) {
-    await ProviderProfile.findByIdAndUpdate(booking.providerId, {
-      rating: Math.round(stats[0].avg * 10) / 10,
-      totalReviews: stats[0].count,
-    });
-  }
+  await recomputeProviderRating(booking.providerId);
 
   await notificationService.createNotification({
     userId: customerId,
@@ -65,8 +68,16 @@ export async function updateReview(
 ) {
   const review = assertFound(await Review.findById(id), 'Review not found');
   if (review.customerId.toString() !== customerId) throw new AppError('Forbidden', 403);
-  Object.assign(review, patch);
+
+  // Only rating/comment/categories are editable. providerId, bookingId and serviceType
+  // are identity fields and must never be reassigned by the reviewer.
+  if (patch.rating !== undefined) review.rating = patch.rating;
+  if (patch.comment !== undefined) review.comment = patch.comment;
+  if (patch.categories !== undefined) review.categories = patch.categories;
   await review.save();
+
+  // An edited rating must update the aggregate or ProviderProfile.rating stays wrong.
+  await recomputeProviderRating(review.providerId);
   return review;
 }
 

@@ -158,7 +158,27 @@ export async function getRoute(id: string) {
 export async function updateRoute(providerId: string, id: string, patch: Record<string, unknown>) {
   const route = assertFound(await Route.findById(id), 'Route not found');
   if (route.providerId.toString() !== providerId) throw new AppError('Forbidden', 403);
-  Object.assign(route, patch);
+
+  // `providerId` is an identity field and is not editable. Origin/destination accept the
+  // same free-text-or-object input as create.
+  const update: Record<string, unknown> = {};
+  if (patch.origin !== undefined) {
+    const origin = await withCoordinates(placeFromInput(patch.origin));
+    if (!origin.name) throw new AppError('Origin is required', 422);
+    update.origin = origin;
+  }
+  if (patch.destination !== undefined) {
+    const destination = await withCoordinates(placeFromInput(patch.destination));
+    if (!destination.name) throw new AppError('Destination is required', 422);
+    update.destination = destination;
+  }
+  if (Array.isArray(patch.stops)) update.stops = patch.stops.map(String).filter(Boolean);
+  if (patch.distance !== undefined) update.distance = Number(patch.distance ?? 0);
+  if (patch.distanceKm !== undefined) update.distance = Number(patch.distanceKm ?? 0);
+  if (patch.estimatedDuration !== undefined) update.estimatedDuration = Number(patch.estimatedDuration ?? 0);
+  if (patch.durationHours !== undefined) update.estimatedDuration = Number(patch.durationHours ?? 0);
+
+  Object.assign(route, update);
   await route.save();
   return route;
 }
@@ -197,10 +217,28 @@ export async function listPickupPoints(providerId?: string) {
   return PickupPoint.find(providerId ? { providerId } : { active: true }).sort({ name: 1 });
 }
 
+/** Pickup-point fields a provider may edit; `providerId` is an identity field. */
+const PICKUP_PROVIDER_FIELDS = [
+  'name',
+  'address',
+  'description',
+  'landmark',
+  'latitude',
+  'longitude',
+  'images',
+  'active',
+] as const;
+
 export async function updatePickupPoint(providerId: string, id: string, patch: Record<string, unknown>) {
   const point = assertFound(await PickupPoint.findById(id), 'Pickup point not found');
   if (point.providerId.toString() !== providerId) throw new AppError('Forbidden', 403);
-  Object.assign(point, patch);
+
+  const update: Record<string, unknown> = {};
+  for (const field of PICKUP_PROVIDER_FIELDS) {
+    if (patch[field] !== undefined) update[field] = patch[field];
+  }
+
+  Object.assign(point, update);
   await point.save();
   return point;
 }
