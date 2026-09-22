@@ -49,6 +49,11 @@ function isLocalhostUrl(value: string): boolean {
   return /(^|\/\/)(localhost|127\.0\.0\.1)([:/]|$)/i.test(value);
 }
 
+/** Values shipped in `.env.example` are never valid production secrets. */
+function isPlaceholderSecret(value: string): boolean {
+  return PUBLISHED_PLACEHOLDERS.has(value) || value.startsWith('REPLACE_ME');
+}
+
 /**
  * Pure production-safety checks. Returns human-readable failure reasons (never the value
  * itself). Empty when not in production, so dev/test/seed paths are unaffected.
@@ -63,10 +68,10 @@ export function validateProductionEnv(vars: ProductionCheckVars): string[] {
   if (vars.JWT_REFRESH_SECRET.length < 32) {
     failures.push('JWT_REFRESH_SECRET must be at least 32 characters');
   }
-  if (PUBLISHED_PLACEHOLDERS.has(vars.JWT_ACCESS_SECRET)) {
+  if (isPlaceholderSecret(vars.JWT_ACCESS_SECRET)) {
     failures.push('JWT_ACCESS_SECRET is a published placeholder value');
   }
-  if (PUBLISHED_PLACEHOLDERS.has(vars.JWT_REFRESH_SECRET)) {
+  if (isPlaceholderSecret(vars.JWT_REFRESH_SECRET)) {
     failures.push('JWT_REFRESH_SECRET is a published placeholder value');
   }
   if (vars.JWT_ACCESS_SECRET === vars.JWT_REFRESH_SECRET) {

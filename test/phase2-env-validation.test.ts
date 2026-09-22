@@ -40,6 +40,14 @@ describe('Phase 2.2 — validateProductionEnv', () => {
     expect(failures.join(' ')).toMatch(/placeholder/i);
   });
 
+  it('rejects REPLACE_ME placeholders from .env.example', () => {
+    const failures = validateProductionEnv({
+      ...base,
+      JWT_ACCESS_SECRET: 'REPLACE_ME__generate_with_openssl_rand_hex_32',
+    });
+    expect(failures.join(' ')).toMatch(/placeholder/i);
+  });
+
   it('rejects identical access and refresh secrets', () => {
     const shared = 'same-secret-value-that-is-long-enough-123';
     const failures = validateProductionEnv({

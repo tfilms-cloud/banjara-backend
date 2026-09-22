@@ -10,7 +10,7 @@ Production-oriented REST + Socket.IO backend for the Banjara travel marketplace 
 - Zod validation
 - Helmet, CORS, rate limiting, mongo sanitize
 - Socket.IO (chat + live trip scaffolding)
-- Cloudinary-ready upload architecture (credentials optional)
+- Supabase Storage for image uploads (credentials optional)
 
 ## Setup
 
@@ -18,6 +18,12 @@ Production-oriented REST + Socket.IO backend for the Banjara travel marketplace 
 cd banjara-backend
 cp .env.example .env
 npm install
+```
+
+Generate the two JWT secrets (must be >= 32 chars and different from each other):
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
 Ensure MongoDB is running locally (or set `MONGODB_URI`).
@@ -113,8 +119,9 @@ Native apps typically send no `Origin` header and are allowed. Do not set a perm
 
 ## Deployment notes
 
-1. Set strong JWT secrets and production `MONGODB_URI`
+1. Set strong JWT secrets (>= 32 chars, distinct) and production `MONGODB_URI`. The
+   process exits on startup if production env validation fails.
 2. Prefer MongoDB replica set for multi-document transactions
 3. Put API behind HTTPS
-4. Configure Cloudinary and a real payment gateway when ready
+4. Configure Supabase Storage and a real payment gateway when ready
 5. Wire Expo push notifications via `EXPO_NOTIFICATION_KEY`
