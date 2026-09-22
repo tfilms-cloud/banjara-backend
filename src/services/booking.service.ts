@@ -19,48 +19,114 @@ function calcPricing(subtotal: number, discount = 0) {
   return { subtotal, tax, serviceFee, discount, totalAmount, currency: 'PKR' };
 }
 
+/**
+ * Atomically reserves seats with a single conditional update (no read-check-write).
+ *
+ * The filter requires every requested seat to exist and be `available`; the update then
+ * flips exactly those seats. Two concurrent bookings cannot both observe a seat as free.
+ *
+ * Counter semantics (applied consistently across reserve/confirm/release):
+ *   availableSeats = seats in `available`
+ *   bookedSeats    = seats in `reserved` OR `booked`
+ * `$inc` is correct only because the filter guarantees the exact transition. Any future
+ * code path that changes a seat's status without adjusting both counters will drift —
+ * see `recomputeTripSeatCounters()` for detection/repair.
+ */
 async function reserveTripSeats(tripId: string, seats: string[]) {
-  const trip = await Trip.findById(tripId);
-  if (!trip) throw new AppError('Trip not found', 404);
-  if (trip.status === 'cancelled') throw new AppError('Trip is cancelled', 400);
+  const unique = [...new Set(seats)];
 
-  for (const seatNumber of seats) {
-    const seat = trip.seatLayout.find((s: { seatNumber: string; status: string }) => s.seatNumber === seatNumber);
-    if (!seat) throw new AppError(`Seat ${seatNumber} does not exist`, 400);
-    if (seat.status !== 'available') throw new AppError(`Seat ${seatNumber} is not available`, 409);
-    seat.status = 'reserved';
+  const trip = await Trip.findOneAndUpdate(
+    {
+      _id: tripId,
+      status: { $ne: 'cancelled' },
+      $and: unique.map((seatNumber) => ({
+        seatLayout: { $elemMatch: { seatNumber, status: 'available' } },
+      })),
+    },
+    {
+      $set: { 'seatLayout.$[s].status': 'reserved' },
+      $inc: { availableSeats: -unique.length, bookedSeats: unique.length },
+    },
+    {
+      arrayFilters: [{ 's.seatNumber': { $in: unique } }],
+      new: true,
+    }
+  );
+
+  if (!trip) {
+    // Distinguish the causes so the error is useful, without re-introducing the race.
+    const existing = await Trip.findById(tripId);
+    if (!existing) throw new AppError('Trip not found', 404);
+    if (existing.status === 'cancelled') throw new AppError('Trip is cancelled', 400);
+    const missing = unique.find(
+      (seatNumber) => !existing.seatLayout.some((s) => s.seatNumber === seatNumber)
+    );
+    if (missing) throw new AppError(`Seat ${missing} does not exist`, 400);
+    const taken = unique.find((seatNumber) => {
+      const seat = existing.seatLayout.find((s) => s.seatNumber === seatNumber);
+      return seat?.status !== 'available';
+    });
+    if (taken) throw new AppError(`Seat ${taken} is not available`, 409);
+    throw new AppError('Seats could not be reserved', 409);
   }
 
-  trip.availableSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'available').length;
-  trip.bookedSeats = trip.seatLayout.filter(
-    (s: { status: string }) => s.status === 'booked' || s.status === 'reserved'
-  ).length;
-  await trip.save();
   return trip;
 }
 
 async function confirmTripSeats(tripId: string, seats: string[]) {
-  const trip = await Trip.findById(tripId);
-  if (!trip) throw new AppError('Trip not found', 404);
-  for (const seatNumber of seats) {
-    const seat = trip.seatLayout.find((s: { seatNumber: string; status: string }) => s.seatNumber === seatNumber);
-    if (seat) seat.status = 'booked';
+  const unique = [...new Set(seats)];
+  const trip = await Trip.findOneAndUpdate(
+    {
+      _id: tripId,
+      $and: unique.map((seatNumber) => ({
+        seatLayout: { $elemMatch: { seatNumber, status: 'reserved' } },
+      })),
+    },
+    { $set: { 'seatLayout.$[s].status': 'booked' } },
+    { arrayFilters: [{ 's.seatNumber': { $in: unique } }], new: true }
+  );
+
+  if (!trip) {
+    // Nothing left to confirm (already booked or seat missing) — idempotent.
+    const existing = await Trip.findById(tripId);
+    if (!existing) throw new AppError('Trip not found', 404);
+    return existing;
   }
-  trip.availableSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'available').length;
-  trip.bookedSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'booked').length;
-  await trip.save();
   return trip;
 }
 
 async function releaseTripSeats(tripId: string, seats: string[]) {
-  const trip = await Trip.findById(tripId);
-  if (!trip) throw new AppError('Trip not found', 404);
-  for (const seatNumber of seats) {
-    const seat = trip.seatLayout.find((s: { seatNumber: string; status: string }) => s.seatNumber === seatNumber);
-    if (seat && (seat.status === 'reserved' || seat.status === 'booked')) seat.status = 'available';
+  const unique = [...new Set(seats)];
+  const trip = await Trip.findOneAndUpdate(
+    {
+      _id: tripId,
+      $and: unique.map((seatNumber) => ({
+        seatLayout: { $elemMatch: { seatNumber, status: { $in: ['reserved', 'booked'] } } },
+      })),
+    },
+    {
+      $set: { 'seatLayout.$[s].status': 'available' },
+      $inc: { availableSeats: unique.length, bookedSeats: -unique.length },
+    },
+    { arrayFilters: [{ 's.seatNumber': { $in: unique } }], new: true }
+  );
+
+  if (!trip) {
+    // Already released (e.g. a retried cancellation) — idempotent no-op.
+    const existing = await Trip.findById(tripId);
+    if (!existing) throw new AppError('Trip not found', 404);
+    return existing;
   }
-  trip.availableSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'available').length;
-  trip.bookedSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'booked').length;
+  return trip;
+}
+
+/** Recompute denormalised seat counters from `seatLayout`. Drift detector / repair aid. */
+export async function recomputeTripSeatCounters(tripId: string) {
+  const trip = assertFound(await Trip.findById(tripId), 'Trip not found');
+  trip.availableSeats = trip.seatLayout.filter((s) => s.status === 'available').length;
+  trip.bookedSeats = trip.seatLayout.filter(
+    (s) => s.status === 'reserved' || s.status === 'booked'
+  ).length;
   await trip.save();
   return trip;
 }

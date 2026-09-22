@@ -18,6 +18,14 @@ export const createBookingSchema = z.object({
         )
         .min(1),
     })
+    .refine((data) => new Set(data.seats).size === data.seats.length, {
+      message: 'Duplicate seat numbers are not allowed',
+      path: ['seats'],
+    })
+    .refine((data) => data.passengerDetails.length === data.seats.length, {
+      message: 'Number of passengers must match number of seats',
+      path: ['passengerDetails'],
+    })
     .optional(),
   hotelBooking: z
     .object({
