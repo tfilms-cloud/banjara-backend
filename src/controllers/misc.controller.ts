@@ -148,7 +148,14 @@ export async function markMessagesRead(req: AuthRequest, res: Response, next: Ne
 
 export async function createSupport(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const ticket = await SupportTicket.create({ ...req.body, userId: req.user!.id });
+    const ticket = await SupportTicket.create({
+      userId: req.user!.id,
+      bookingId: req.body.bookingId,
+      category: req.body.category,
+      subject: req.body.subject,
+      message: req.body.message,
+      ...(req.body.priority ? { priority: req.body.priority } : {}),
+    });
     return sendSuccess(res, ticket, 'Support ticket created', 201);
   } catch (error) {
     next(error);
@@ -184,8 +191,12 @@ export async function getSupport(req: AuthRequest, res: Response, next: NextFunc
 
 export async function updateSupport(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    const update: Record<string, unknown> = {};
+    if (req.body.status !== undefined) update.status = req.body.status;
+    if (req.body.priority !== undefined) update.priority = req.body.priority;
+
     const ticket = assertFound(
-      await SupportTicket.findByIdAndUpdate(paramId(req.params.id), req.body, { new: true }),
+      await SupportTicket.findByIdAndUpdate(paramId(req.params.id), update, { new: true }),
       'Ticket not found'
     );
     return sendSuccess(res, ticket);

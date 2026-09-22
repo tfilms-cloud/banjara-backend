@@ -1,6 +1,8 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { env } from './env';
 import { AppError } from '../utils/AppError';
+import { logger } from '../utils/logger';
+import { sniffImageType } from '../utils/imageSignature';
 
 export type UploadFolder = 'avatars' | 'vehicles' | 'hotels' | 'rooms' | 'logos' | 'chat';
 
@@ -97,7 +99,7 @@ async function ensureBucket(client: SupabaseClient) {
 
   const { data: buckets, error: listError } = await client.storage.listBuckets();
   if (listError) {
-    console.error('[supabase] listBuckets failed:', listError);
+    logger.error({ err: listError }, '[supabase] listBuckets failed');
     throw new AppError(describeStorageError(listError), 502);
   }
 
@@ -111,7 +113,7 @@ async function ensureBucket(client: SupabaseClient) {
     if (createError) {
       const msg = createError.message?.toLowerCase() ?? '';
       if (!msg.includes('already') && !msg.includes('exists')) {
-        console.error('[supabase] createBucket failed:', createError);
+        logger.error({ err: createError }, '[supabase] createBucket failed');
         throw new AppError(describeStorageError(createError), 502);
       }
     }
@@ -122,7 +124,7 @@ async function ensureBucket(client: SupabaseClient) {
       allowedMimeTypes: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'],
     });
     if (updateError) {
-      console.warn('[supabase] could not make bucket public:', updateError.message);
+      logger.warn({ err: updateError }, '[supabase] could not make bucket public');
     }
   }
 
@@ -152,33 +154,40 @@ export async function uploadImageBuffer(input: {
     throw new AppError('Only image uploads are allowed', 400);
   }
 
+  // Trust the magic bytes, not the client-supplied multipart MIME type.
+  const detected = sniffImageType(input.buffer);
+  if (!detected) {
+    throw new AppError('File content is not a supported image (jpeg, png, webp, gif)', 400);
+  }
+
   const client = getSupabase();
   await ensureBucket(client);
 
   const bucket = env.SUPABASE_STORAGE_BUCKET;
-  const ext = extensionFromMime(input.mime);
+  const ext = extensionFromMime(detected);
+  // Filename is generated server-side; the client's originalname never reaches the path.
   const safeName = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}.${ext}`;
   const path = `${input.folder}/${input.userId}/${safeName}`;
 
   const { error } = await client.storage.from(bucket).upload(path, input.buffer, {
-    contentType: input.mime,
+    contentType: detected,
     upsert: false,
     cacheControl: '3600',
   });
 
   if (error) {
-    console.error('[supabase] upload failed:', error);
+    logger.error({ err: error }, '[supabase] upload failed');
     const lower = (error.message || '').toLowerCase();
     if (lower.includes('bucket') && lower.includes('not found')) {
       bucketReady = false;
       await ensureBucket(client);
       const retry = await client.storage.from(bucket).upload(path, input.buffer, {
-        contentType: input.mime,
+        contentType: detected,
         upsert: false,
         cacheControl: '3600',
       });
       if (retry.error) {
-        console.error('[supabase] upload retry failed:', retry.error);
+        logger.error({ err: retry.error }, '[supabase] upload retry failed');
         throw new AppError(describeStorageError(retry.error), 502);
       }
     } else {

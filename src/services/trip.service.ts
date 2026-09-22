@@ -5,6 +5,7 @@ import { Vehicle } from '../models/Vehicle';
 import { AppError, assertFound } from '../utils/AppError';
 import { resolvePlaceCoordinates } from '../utils/geoPlaces';
 import { getPagination, paginatedResult } from '../utils/pagination';
+import { escapeRegex } from '../utils/regex';
 import { assertTransportProvider } from './provider.service';
 import mongoose from 'mongoose';
 
@@ -94,6 +95,17 @@ async function ensurePickupCoordinates(
   return point;
 }
 
+function isPopulatedPickupPoint(
+  value: unknown
+): value is InstanceType<typeof PickupPoint> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'latitude' in value &&
+    'longitude' in value
+  );
+}
+
 function placeFromInput(value: unknown): { name: string; latitude: number; longitude: number } {
   if (value && typeof value === 'object') {
     const record = value as Record<string, unknown>;
@@ -147,7 +159,27 @@ export async function getRoute(id: string) {
 export async function updateRoute(providerId: string, id: string, patch: Record<string, unknown>) {
   const route = assertFound(await Route.findById(id), 'Route not found');
   if (route.providerId.toString() !== providerId) throw new AppError('Forbidden', 403);
-  Object.assign(route, patch);
+
+  // `providerId` is an identity field and is not editable. Origin/destination accept the
+  // same free-text-or-object input as create.
+  const update: Record<string, unknown> = {};
+  if (patch.origin !== undefined) {
+    const origin = await withCoordinates(placeFromInput(patch.origin));
+    if (!origin.name) throw new AppError('Origin is required', 422);
+    update.origin = origin;
+  }
+  if (patch.destination !== undefined) {
+    const destination = await withCoordinates(placeFromInput(patch.destination));
+    if (!destination.name) throw new AppError('Destination is required', 422);
+    update.destination = destination;
+  }
+  if (Array.isArray(patch.stops)) update.stops = patch.stops.map(String).filter(Boolean);
+  if (patch.distance !== undefined) update.distance = Number(patch.distance ?? 0);
+  if (patch.distanceKm !== undefined) update.distance = Number(patch.distanceKm ?? 0);
+  if (patch.estimatedDuration !== undefined) update.estimatedDuration = Number(patch.estimatedDuration ?? 0);
+  if (patch.durationHours !== undefined) update.estimatedDuration = Number(patch.durationHours ?? 0);
+
+  Object.assign(route, update);
   await route.save();
   return route;
 }
@@ -186,10 +218,28 @@ export async function listPickupPoints(providerId?: string) {
   return PickupPoint.find(providerId ? { providerId } : { active: true }).sort({ name: 1 });
 }
 
+/** Pickup-point fields a provider may edit; `providerId` is an identity field. */
+const PICKUP_PROVIDER_FIELDS = [
+  'name',
+  'address',
+  'description',
+  'landmark',
+  'latitude',
+  'longitude',
+  'images',
+  'active',
+] as const;
+
 export async function updatePickupPoint(providerId: string, id: string, patch: Record<string, unknown>) {
   const point = assertFound(await PickupPoint.findById(id), 'Pickup point not found');
   if (point.providerId.toString() !== providerId) throw new AppError('Forbidden', 403);
-  Object.assign(point, patch);
+
+  const update: Record<string, unknown> = {};
+  for (const field of PICKUP_PROVIDER_FIELDS) {
+    if (patch[field] !== undefined) update[field] = patch[field];
+  }
+
+  Object.assign(point, update);
   await point.save();
   return point;
 }
@@ -268,8 +318,8 @@ export async function searchTrips(query: Record<string, unknown>) {
   const { page, limit, skip } = getPagination(query);
   const filter: Record<string, unknown> = { status: { $nin: ['cancelled'] } };
 
-  if (query.origin) filter.origin = new RegExp(String(query.origin), 'i');
-  if (query.destination) filter.destination = new RegExp(String(query.destination), 'i');
+  if (query.origin) filter.origin = new RegExp(escapeRegex(String(query.origin)), 'i');
+  if (query.destination) filter.destination = new RegExp(escapeRegex(String(query.destination)), 'i');
   if (query.date) filter.departureDate = query.date;
   if (query.journeyType === 'one_way' || query.journeyType === 'round_trip') {
     filter.journeyType = query.journeyType;
@@ -323,18 +373,46 @@ export async function getTrip(id: string) {
   // Backfill 0,0 pickups so maps work for older free-text stops
   const pickups = Array.isArray(trip.pickupPoints) ? trip.pickupPoints : [];
   for (const point of pickups) {
-    if (point && typeof point === 'object' && 'latitude' in point) {
-      await ensurePickupCoordinates(point as InstanceType<typeof PickupPoint>);
+    if (isPopulatedPickupPoint(point)) {
+      await ensurePickupCoordinates(point);
     }
   }
 
   return trip;
 }
 
+/**
+ * Trip fields a provider may change. `status`, the seat counters, `seatLayout`,
+ * `providerId` and `vehicleId` are system/admin-managed and deliberately excluded.
+ */
+const TRIP_PROVIDER_FIELDS = [
+  'routeId',
+  'origin',
+  'destination',
+  'departureDate',
+  'departureTime',
+  'arrivalDate',
+  'arrivalTime',
+  'pickupPoints',
+  'dropoffPoints',
+  'price',
+  'amenities',
+  'description',
+  'journeyType',
+  'returnDate',
+  'returnTime',
+] as const;
+
 export async function updateTrip(providerId: string, id: string, patch: Record<string, unknown>) {
   const trip = assertFound(await Trip.findById(id), 'Trip not found');
   if (trip.providerId.toString() !== providerId) throw new AppError('Forbidden', 403);
-  Object.assign(trip, patch);
+
+  const update: Record<string, unknown> = {};
+  for (const field of TRIP_PROVIDER_FIELDS) {
+    if (patch[field] !== undefined) update[field] = patch[field];
+  }
+
+  Object.assign(trip, update);
   await trip.save();
   return trip;
 }

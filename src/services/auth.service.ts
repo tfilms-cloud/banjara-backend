@@ -1,7 +1,11 @@
+import crypto from 'crypto';
+import { Types } from 'mongoose';
 import { hashPassword, comparePassword } from '../utils/password';
 import { signTokenPair, verifyRefreshToken } from '../utils/jwt';
 import { ProviderProfile } from '../models/ProviderProfile';
 import { User, type IUser } from '../models/User';
+import { PasswordResetToken } from '../models/PasswordResetToken';
+import { deliverPasswordResetToken } from './notification/passwordResetDelivery';
 import { AppError, assertFound } from '../utils/AppError';
 import type { LoginInput, RegisterInput } from '../types/auth.types';
 
@@ -16,7 +20,21 @@ async function withProviderMeta(user: IUser) {
   return json;
 }
 
-const resetCodes = new Map<string, string>();
+const RESET_TOKEN_TTL_MS = 15 * 60 * 1000;
+const RESET_MAX_ATTEMPTS = 5;
+const RESET_REQUEST_COOLDOWN_MS = 60 * 1000;
+const GENERIC_RESET_MESSAGE = 'If the email exists, a reset code was sent';
+
+function hashResetToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function resetTokensMatch(provided: string, storedHash: string): boolean {
+  const providedHash = Buffer.from(hashResetToken(provided), 'hex');
+  const stored = Buffer.from(storedHash, 'hex');
+  if (providedHash.length !== stored.length) return false;
+  return crypto.timingSafeEqual(providedHash, stored);
+}
 
 export async function register(input: RegisterInput) {
   const existing = await User.findOne({ email: input.email.toLowerCase() });
@@ -94,22 +112,76 @@ export async function me(userId: string) {
 }
 
 export async function forgotPassword(email: string) {
-  const user = await User.findOne({ email: email.toLowerCase() });
+  const normalized = email.toLowerCase();
+  const user = await User.findOne({ email: normalized });
+
   if (!user) {
-    return { message: 'If the email exists, a reset code was sent' };
+    // Mirror the known branch's database round trip so response time is not itself an
+    // enumeration oracle. (No bcrypt is involved on either branch, so a dummy hash would
+    // only make the unknown branch conspicuously slower.)
+    await PasswordResetToken.findOne({ userId: new Types.ObjectId() });
+    return { message: GENERIC_RESET_MESSAGE };
   }
-  const code = '123456';
-  resetCodes.set(email.toLowerCase(), code);
-  return { message: 'If the email exists, a reset code was sent', demoCode: code };
+
+  // Per-account throttle. Per-IP rate limiting does not stop a distributed attempt
+  // against one known admin address.
+  const recent = await PasswordResetToken.findOne({
+    userId: user._id,
+    createdAt: { $gte: new Date(Date.now() - RESET_REQUEST_COOLDOWN_MS) },
+  }).sort({ createdAt: -1 });
+  if (recent) {
+    return { message: GENERIC_RESET_MESSAGE };
+  }
+
+  const token = crypto.randomBytes(32).toString('hex');
+  await PasswordResetToken.create({
+    userId: user._id,
+    tokenHash: hashResetToken(token),
+    expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+  });
+
+  await deliverPasswordResetToken(user.email, token);
+  return { message: GENERIC_RESET_MESSAGE };
 }
 
 export async function resetPassword(email: string, code: string, newPassword: string) {
-  const expected = resetCodes.get(email.toLowerCase());
-  if (!expected || expected !== code) throw new AppError('Invalid reset code', 400);
-  const user = await User.findOne({ email: email.toLowerCase() });
-  if (!user) throw new AppError('User not found', 404);
+  const normalized = email.toLowerCase();
+  const user = await User.findOne({ email: normalized });
+  if (!user) {
+    await PasswordResetToken.findOne({ userId: new Types.ObjectId() });
+    throw new AppError('Invalid reset code', 400);
+  }
+
+  const record = await PasswordResetToken.findOne({
+    userId: user._id,
+    usedAt: null,
+    expiresAt: { $gt: new Date() },
+  }).sort({ createdAt: -1 });
+
+  if (!record) throw new AppError('Invalid reset code', 400);
+
+  if (!resetTokensMatch(code, record.tokenHash)) {
+    record.attempts += 1;
+    if (record.attempts >= RESET_MAX_ATTEMPTS) {
+      record.usedAt = new Date();
+    }
+    await record.save();
+    throw new AppError('Invalid reset code', 400);
+  }
+
   user.passwordHash = await hashPassword(newPassword);
   await user.save();
-  resetCodes.delete(email.toLowerCase());
+  // Kill any session the attacker (or the legitimate user) already holds. Without this,
+  // resetting the password does not evict an intruder with a live refresh token.
+  await User.findByIdAndUpdate(user._id, { $unset: { refreshTokenHash: 1 } });
+
+  record.usedAt = new Date();
+  await record.save();
+  // Single use: burn every other outstanding token for this user.
+  await PasswordResetToken.updateMany(
+    { userId: user._id, _id: { $ne: record._id }, usedAt: null },
+    { $set: { usedAt: new Date() } }
+  );
+
   return { message: 'Password updated successfully' };
 }

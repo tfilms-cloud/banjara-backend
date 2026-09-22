@@ -17,11 +17,14 @@ import { Notification } from '../models/Notification';
 import { Message } from '../models/Message';
 import { SupportTicket } from '../models/SupportTicket';
 import { Counter } from '../models/Counter';
+import { logger } from '../utils/logger';
+import { assertDestructiveSeedAllowed } from './guards';
 
 async function seed() {
+  assertDestructiveSeedAllowed();
   await connectDatabase();
 
-  console.log('Clearing collections...');
+  logger.info('Clearing collections...');
   await Promise.all([
     User.deleteMany({}),
     ProviderProfile.deleteMany({}),
@@ -53,14 +56,14 @@ async function seed() {
     status: 'active',
   });
 
-  console.log('Seed complete — admin only (no demo customers/providers/trips/hotels).');
-  console.log('Admin: admin@banjara.com / demo1234');
+  // Credentials are intentionally not printed — stdout lands in deploy logs.
+  logger.info('Seed complete — admin only (no demo customers/providers/trips/hotels).');
 
   await disconnectDatabase();
 }
 
 seed().catch(async (error) => {
-  console.error(error);
+  logger.error({ err: error }, 'Seed failed');
   await disconnectDatabase();
   process.exit(1);
 });

@@ -6,7 +6,7 @@ export const createBookingSchema = z.object({
   transportBooking: z
     .object({
       tripId: z.string(),
-      seats: z.array(z.string()).min(1),
+      seats: z.array(z.string()).min(1).max(10),
       pickupPoint: z.string().optional(),
       dropoffPoint: z.string().optional(),
       passengerDetails: z
@@ -16,7 +16,16 @@ export const createBookingSchema = z.object({
             phone: z.string().optional(),
           })
         )
-        .min(1),
+        .min(1)
+        .max(10),
+    })
+    .refine((data) => new Set(data.seats).size === data.seats.length, {
+      message: 'Duplicate seat numbers are not allowed',
+      path: ['seats'],
+    })
+    .refine((data) => data.passengerDetails.length === data.seats.length, {
+      message: 'Number of passengers must match number of seats',
+      path: ['passengerDetails'],
     })
     .optional(),
   hotelBooking: z

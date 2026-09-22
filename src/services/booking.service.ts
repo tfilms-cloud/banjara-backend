@@ -1,4 +1,5 @@
 import { env } from '../config/env';
+import mongoose from 'mongoose';
 import { Booking } from '../models/Booking';
 import { Trip } from '../models/Trip';
 import { ProviderProfile } from '../models/ProviderProfile';
@@ -7,6 +8,7 @@ import { AppError, assertFound } from '../utils/AppError';
 import { generateBookingNumber } from '../utils/bookingNumber';
 import { buildTicketQrDataUrl } from '../utils/qrCode';
 import { getPagination, paginatedResult } from '../utils/pagination';
+import { log } from '../utils/logger';
 import type { PaymentMethod } from '../types/booking.types';
 import * as hotelService from './hotel.service';
 import * as paymentService from './payment.service';
@@ -19,48 +21,114 @@ function calcPricing(subtotal: number, discount = 0) {
   return { subtotal, tax, serviceFee, discount, totalAmount, currency: 'PKR' };
 }
 
+/**
+ * Atomically reserves seats with a single conditional update (no read-check-write).
+ *
+ * The filter requires every requested seat to exist and be `available`; the update then
+ * flips exactly those seats. Two concurrent bookings cannot both observe a seat as free.
+ *
+ * Counter semantics (applied consistently across reserve/confirm/release):
+ *   availableSeats = seats in `available`
+ *   bookedSeats    = seats in `reserved` OR `booked`
+ * `$inc` is correct only because the filter guarantees the exact transition. Any future
+ * code path that changes a seat's status without adjusting both counters will drift —
+ * see `recomputeTripSeatCounters()` for detection/repair.
+ */
 async function reserveTripSeats(tripId: string, seats: string[]) {
-  const trip = await Trip.findById(tripId);
-  if (!trip) throw new AppError('Trip not found', 404);
-  if (trip.status === 'cancelled') throw new AppError('Trip is cancelled', 400);
+  const unique = [...new Set(seats)];
 
-  for (const seatNumber of seats) {
-    const seat = trip.seatLayout.find((s: { seatNumber: string; status: string }) => s.seatNumber === seatNumber);
-    if (!seat) throw new AppError(`Seat ${seatNumber} does not exist`, 400);
-    if (seat.status !== 'available') throw new AppError(`Seat ${seatNumber} is not available`, 409);
-    seat.status = 'reserved';
+  const trip = await Trip.findOneAndUpdate(
+    {
+      _id: tripId,
+      status: { $ne: 'cancelled' },
+      $and: unique.map((seatNumber) => ({
+        seatLayout: { $elemMatch: { seatNumber, status: 'available' } },
+      })),
+    },
+    {
+      $set: { 'seatLayout.$[s].status': 'reserved' },
+      $inc: { availableSeats: -unique.length, bookedSeats: unique.length },
+    },
+    {
+      arrayFilters: [{ 's.seatNumber': { $in: unique } }],
+      new: true,
+    }
+  );
+
+  if (!trip) {
+    // Distinguish the causes so the error is useful, without re-introducing the race.
+    const existing = await Trip.findById(tripId);
+    if (!existing) throw new AppError('Trip not found', 404);
+    if (existing.status === 'cancelled') throw new AppError('Trip is cancelled', 400);
+    const missing = unique.find(
+      (seatNumber) => !existing.seatLayout.some((s) => s.seatNumber === seatNumber)
+    );
+    if (missing) throw new AppError(`Seat ${missing} does not exist`, 400);
+    const taken = unique.find((seatNumber) => {
+      const seat = existing.seatLayout.find((s) => s.seatNumber === seatNumber);
+      return seat?.status !== 'available';
+    });
+    if (taken) throw new AppError(`Seat ${taken} is not available`, 409);
+    throw new AppError('Seats could not be reserved', 409);
   }
 
-  trip.availableSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'available').length;
-  trip.bookedSeats = trip.seatLayout.filter(
-    (s: { status: string }) => s.status === 'booked' || s.status === 'reserved'
-  ).length;
-  await trip.save();
   return trip;
 }
 
 async function confirmTripSeats(tripId: string, seats: string[]) {
-  const trip = await Trip.findById(tripId);
-  if (!trip) throw new AppError('Trip not found', 404);
-  for (const seatNumber of seats) {
-    const seat = trip.seatLayout.find((s: { seatNumber: string; status: string }) => s.seatNumber === seatNumber);
-    if (seat) seat.status = 'booked';
+  const unique = [...new Set(seats)];
+  const trip = await Trip.findOneAndUpdate(
+    {
+      _id: tripId,
+      $and: unique.map((seatNumber) => ({
+        seatLayout: { $elemMatch: { seatNumber, status: 'reserved' } },
+      })),
+    },
+    { $set: { 'seatLayout.$[s].status': 'booked' } },
+    { arrayFilters: [{ 's.seatNumber': { $in: unique } }], new: true }
+  );
+
+  if (!trip) {
+    // Nothing left to confirm (already booked or seat missing) — idempotent.
+    const existing = await Trip.findById(tripId);
+    if (!existing) throw new AppError('Trip not found', 404);
+    return existing;
   }
-  trip.availableSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'available').length;
-  trip.bookedSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'booked').length;
-  await trip.save();
   return trip;
 }
 
 async function releaseTripSeats(tripId: string, seats: string[]) {
-  const trip = await Trip.findById(tripId);
-  if (!trip) throw new AppError('Trip not found', 404);
-  for (const seatNumber of seats) {
-    const seat = trip.seatLayout.find((s: { seatNumber: string; status: string }) => s.seatNumber === seatNumber);
-    if (seat && (seat.status === 'reserved' || seat.status === 'booked')) seat.status = 'available';
+  const unique = [...new Set(seats)];
+  const trip = await Trip.findOneAndUpdate(
+    {
+      _id: tripId,
+      $and: unique.map((seatNumber) => ({
+        seatLayout: { $elemMatch: { seatNumber, status: { $in: ['reserved', 'booked'] } } },
+      })),
+    },
+    {
+      $set: { 'seatLayout.$[s].status': 'available' },
+      $inc: { availableSeats: unique.length, bookedSeats: -unique.length },
+    },
+    { arrayFilters: [{ 's.seatNumber': { $in: unique } }], new: true }
+  );
+
+  if (!trip) {
+    // Already released (e.g. a retried cancellation) — idempotent no-op.
+    const existing = await Trip.findById(tripId);
+    if (!existing) throw new AppError('Trip not found', 404);
+    return existing;
   }
-  trip.availableSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'available').length;
-  trip.bookedSeats = trip.seatLayout.filter((s: { status: string }) => s.status === 'booked').length;
+  return trip;
+}
+
+/** Recompute denormalised seat counters from `seatLayout`. Drift detector / repair aid. */
+export async function recomputeTripSeatCounters(tripId: string) {
+  const trip = assertFound(await Trip.findById(tripId), 'Trip not found');
+  trip.availableSeats = trip.seatLayout.filter((s) => s.status === 'available').length;
+  trip.bookedSeats = trip.seatLayout.filter(
+    (s) => s.status === 'reserved' || s.status === 'booked'
+  ).length;
   await trip.save();
   return trip;
 }
@@ -93,13 +161,18 @@ export async function createBooking(
     };
   }
 ) {
-  // Note: wrap in MongoDB transactions when running a replica set in production.
+  // This flow is NOT wrapped in a MongoDB transaction. Production topology is
+  // unconfirmed and a standalone node cannot run transactions, so consistency is
+  // provided by the compensating actions below. See config/database.ts for the startup
+  // capability check; the transaction path is written up as a recommendation.
   let providerId = '';
   let pricing = calcPricing(0);
   let transportBooking;
   let hotelBooking;
   let reservedTripSeats: string[] | null = null;
   let reservedHotel: { roomId: string; checkIn: string; checkOut: string; rooms: number } | null = null;
+  let createdBooking: InstanceType<typeof Booking> | null = null;
+  let createdPaymentId: string | null = null;
 
   try {
     if (input.bookingType === 'transport') {
@@ -150,7 +223,7 @@ export async function createBooking(
     }
 
     const bookingNumber = await generateBookingNumber();
-    const booking = await Booking.create({
+    createdBooking = await Booking.create({
       bookingNumber,
       customerId,
       providerId,
@@ -163,37 +236,45 @@ export async function createBooking(
     });
 
     const payment = await paymentService.createPayment({
-      bookingId: booking._id.toString(),
+      bookingId: createdBooking._id.toString(),
       customerId,
       providerId,
       amount: pricing.totalAmount,
       method: input.paymentMethod,
     });
+    createdPaymentId = payment._id.toString();
 
-    const verified = await paymentService.verifyPayment(payment._id.toString());
+    const verified = await paymentService.verifyPayment(createdPaymentId);
 
-    booking.paymentStatus = verified.status === 'paid' ? 'paid' : verified.status;
-    booking.bookingStatus = 'confirmed';
-    booking.paymentId = verified._id;
-    booking.ticketQr = buildTicketQrDataUrl(booking.bookingNumber);
-    await booking.save();
+    createdBooking.paymentStatus = verified.status === 'paid' ? 'paid' : verified.status;
+    createdBooking.bookingStatus = 'confirmed';
+    createdBooking.paymentId = verified._id;
+    createdBooking.ticketQr = buildTicketQrDataUrl(createdBooking.bookingNumber);
+    await createdBooking.save();
 
     if (input.bookingType === 'transport' && input.transportBooking) {
       await confirmTripSeats(input.transportBooking.tripId, input.transportBooking.seats);
     }
-
-    await notificationService.createNotification({
-      userId: customerId,
-      type: 'bookingConfirmed',
-      title: 'Booking confirmed',
-      message: `Your booking ${booking.bookingNumber} is confirmed.`,
-      data: { bookingId: booking._id.toString() },
-    });
-
-    return booking;
   } catch (error) {
+    // Compensate in reverse order. Best-effort: a compensation failure is logged but
+    // must never mask the original error.
+    if (createdPaymentId) {
+      await paymentService.refundPaymentAsSystem(createdPaymentId).catch((refundError) => {
+        log().error({ paymentId: createdPaymentId, err: refundError }, '[booking] payment compensation failed');
+      });
+    }
+    if (createdBooking) {
+      await Booking.findByIdAndUpdate(createdBooking._id, {
+        bookingStatus: 'cancelled',
+        paymentStatus: 'refunded',
+      }).catch((updateError) => {
+        log().error({ bookingId: createdBooking?._id.toString(), err: updateError }, '[booking] booking compensation failed');
+      });
+    }
     if (reservedTripSeats && input.transportBooking) {
-      await releaseTripSeats(input.transportBooking.tripId, reservedTripSeats).catch(() => undefined);
+      await releaseTripSeats(input.transportBooking.tripId, reservedTripSeats).catch((releaseError) => {
+        log().error({ tripId: input.transportBooking?.tripId, seats: reservedTripSeats, err: releaseError }, '[booking] seat release failed');
+      });
     }
     if (reservedHotel) {
       await hotelService
@@ -203,10 +284,29 @@ export async function createBooking(
           reservedHotel.checkOut,
           reservedHotel.rooms
         )
-        .catch(() => undefined);
+        .catch((releaseError) => {
+          log().error({ ...reservedHotel, err: releaseError }, '[booking] room release failed');
+        });
     }
     throw error;
   }
+
+  const booking = assertFound(createdBooking, 'Booking not created');
+
+  // Non-critical side effect: a notification failure must never roll back a confirmed booking.
+  await notificationService
+    .createNotification({
+      userId: customerId,
+      type: 'bookingConfirmed',
+      title: 'Booking confirmed',
+      message: `Your booking ${booking.bookingNumber} is confirmed.`,
+      data: { bookingId: booking._id.toString() },
+    })
+    .catch((notificationError) => {
+      log().error({ bookingId: booking._id.toString(), err: notificationError }, '[booking] confirmation notification failed');
+    });
+
+  return booking;
 }
 
 export async function getBooking(id: string, requester?: { id: string; role: string; providerId?: string }) {
@@ -273,7 +373,7 @@ export async function cancelBooking(
   if (booking.paymentStatus === 'paid') {
     booking.paymentStatus = 'refunded';
     if (booking.paymentId) {
-      await paymentService.refundPayment(booking.paymentId.toString());
+      await paymentService.refundPaymentAsSystem(booking.paymentId.toString());
     }
   }
 
@@ -322,11 +422,6 @@ export async function getTicket(id: string, requester: { id: string; role: strin
 }
 
 export async function getProviderEarnings(providerId: string) {
-  const bookings = await Booking.find({
-    providerId,
-    bookingStatus: { $in: ['confirmed', 'completed'] },
-  });
-
   const now = new Date();
   const startOfDay = new Date(now);
   startOfDay.setHours(0, 0, 0, 0);
@@ -334,11 +429,29 @@ export async function getProviderEarnings(providerId: string) {
   startOfWeek.setDate(now.getDate() - 7);
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  const sum = (list: typeof bookings) => list.reduce((acc, b) => acc + b.totalAmount, 0);
-  const totalRevenue = sum(bookings);
-  const today = sum(bookings.filter((b) => b.createdAt >= startOfDay));
-  const thisWeek = sum(bookings.filter((b) => b.createdAt >= startOfWeek));
-  const thisMonth = sum(bookings.filter((b) => b.createdAt >= startOfMonth));
+  // Aggregated in the database rather than loading every booking into memory.
+  const [row] = await Booking.aggregate([
+    {
+      $match: {
+        providerId: new mongoose.Types.ObjectId(providerId),
+        bookingStatus: { $in: ['confirmed', 'completed'] },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalRevenue: { $sum: '$totalAmount' },
+        today: { $sum: { $cond: [{ $gte: ['$createdAt', startOfDay] }, '$totalAmount', 0] } },
+        thisWeek: { $sum: { $cond: [{ $gte: ['$createdAt', startOfWeek] }, '$totalAmount', 0] } },
+        thisMonth: { $sum: { $cond: [{ $gte: ['$createdAt', startOfMonth] }, '$totalAmount', 0] } },
+      },
+    },
+  ]);
+
+  const totalRevenue = row?.totalRevenue ?? 0;
+  const today = row?.today ?? 0;
+  const thisWeek = row?.thisWeek ?? 0;
+  const thisMonth = row?.thisMonth ?? 0;
   const platformFees = Math.round(totalRevenue * env.PLATFORM_FEE_RATE);
   const pendingPayout = Math.round(thisMonth * (1 - env.PLATFORM_FEE_RATE));
 
@@ -371,7 +484,7 @@ export async function updateProviderBookingStatus(
     if (booking.paymentStatus === 'paid') {
       booking.paymentStatus = 'refunded';
       if (booking.paymentId) {
-        await paymentService.refundPayment(booking.paymentId.toString());
+        await paymentService.refundPaymentAsSystem(booking.paymentId.toString());
       }
     }
     if (booking.bookingType === 'transport' && booking.transportBooking) {

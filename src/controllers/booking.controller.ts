@@ -85,7 +85,7 @@ export async function updateStatus(req: AuthRequest, res: Response, next: NextFu
 
 export async function getPayment(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    return sendSuccess(res, await paymentService.getPayment(paramId(req.params.id)));
+    return sendSuccess(res, await paymentService.getPayment(paramId(req.params.id), req.user!));
   } catch (error) {
     next(error);
   }
@@ -93,7 +93,7 @@ export async function getPayment(req: AuthRequest, res: Response, next: NextFunc
 
 export async function refundPayment(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    return sendSuccess(res, await paymentService.refundPayment(paramId(req.params.id)));
+    return sendSuccess(res, await paymentService.refundPayment(paramId(req.params.id), req.user!));
   } catch (error) {
     next(error);
   }

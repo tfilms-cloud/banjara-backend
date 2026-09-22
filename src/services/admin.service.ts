@@ -15,6 +15,7 @@ import { SupportTicket } from '../models/SupportTicket';
 import { env } from '../config/env';
 import { AppError, assertFound } from '../utils/AppError';
 import { getPagination, paginatedResult } from '../utils/pagination';
+import { escapeRegex } from '../utils/regex';
 import type { VerificationStatus } from '../types/provider.types';
 import * as vehicleService from './vehicle.service';
 import * as hotelService from './hotel.service';
@@ -169,12 +170,13 @@ export async function listProvidersAdmin(query: Record<string, unknown>) {
   if (status) filter.verificationStatus = status;
 
   if (search) {
+    const safeSearch = escapeRegex(search);
     filter.$or = [
-      { businessName: { $regex: search, $options: 'i' } },
-      { ownerName: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } },
-      { phone: { $regex: search, $options: 'i' } },
-      { city: { $regex: search, $options: 'i' } },
+      { businessName: { $regex: safeSearch, $options: 'i' } },
+      { ownerName: { $regex: safeSearch, $options: 'i' } },
+      { email: { $regex: safeSearch, $options: 'i' } },
+      { phone: { $regex: safeSearch, $options: 'i' } },
+      { city: { $regex: safeSearch, $options: 'i' } },
     ];
   }
 

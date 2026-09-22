@@ -6,7 +6,12 @@ export async function addFavorite(
   input: { targetType: 'trip' | 'hotel' | 'provider'; targetId: string }
 ) {
   try {
-    return await Favorite.create({ userId, ...input });
+    // Build explicitly: spreading `input` after `userId` would let a caller override it.
+    return await Favorite.create({
+      userId,
+      targetType: input.targetType,
+      targetId: input.targetId,
+    });
   } catch {
     throw new AppError('Already in favorites', 409);
   }

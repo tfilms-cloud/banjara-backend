@@ -7,6 +7,12 @@ export const createReviewSchema = z.object({
   categories: z.record(z.string(), z.number().min(1).max(5)).optional(),
 });
 
+export const updateReviewSchema = z.object({
+  rating: z.number().min(1).max(5).optional(),
+  comment: z.string().optional(),
+  categories: z.record(z.string(), z.number().min(1).max(5)).optional(),
+});
+
 export const replyReviewSchema = z.object({
   reply: z.string().min(2),
 });

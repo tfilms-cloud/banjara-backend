@@ -2,6 +2,8 @@ import { Router } from 'express';
 import * as adminController from '../controllers/admin.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { requireRole } from '../middleware/role.middleware';
+import { validate } from '../middleware/validation.middleware';
+import { updateSupportSchema } from '../validators/support.validator';
 
 const router = Router();
 router.use(authenticate, requireRole('admin'));
@@ -61,7 +63,7 @@ router.get('/messages', adminController.listMessages);
 
 router.get('/support', adminController.listSupport);
 router.get('/support/:id', adminController.getSupport);
-router.put('/support/:id', adminController.updateSupport);
+router.put('/support/:id', validate(updateSupportSchema), adminController.updateSupport);
 
 router.get('/reports', adminController.getReports);
 
