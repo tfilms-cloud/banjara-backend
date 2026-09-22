@@ -273,7 +273,7 @@ export async function cancelBooking(
   if (booking.paymentStatus === 'paid') {
     booking.paymentStatus = 'refunded';
     if (booking.paymentId) {
-      await paymentService.refundPayment(booking.paymentId.toString());
+      await paymentService.refundPaymentAsSystem(booking.paymentId.toString());
     }
   }
 
@@ -371,7 +371,7 @@ export async function updateProviderBookingStatus(
     if (booking.paymentStatus === 'paid') {
       booking.paymentStatus = 'refunded';
       if (booking.paymentId) {
-        await paymentService.refundPayment(booking.paymentId.toString());
+        await paymentService.refundPaymentAsSystem(booking.paymentId.toString());
       }
     }
     if (booking.bookingType === 'transport' && booking.transportBooking) {
