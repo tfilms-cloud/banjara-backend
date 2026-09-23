@@ -132,6 +132,24 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
 }
 
+/** Guest-house/lodge providers list as guestHouse; everyone else never does. */
+function resolveHotelType(
+  providerType: IProviderProfile['providerType'] | undefined,
+  details: Record<string, unknown>
+): IHotel['hotelType'] {
+  const offersGuestStay = (providerType ?? []).some(
+    (type) => type === 'guestHouse' || type === 'lodge'
+  );
+  let hotelType = mapHotelType(details.hotelType);
+  if (offersGuestStay && (hotelType === 'hotel' || hotelType === 'resort')) {
+    hotelType = 'guestHouse';
+  }
+  if (!offersGuestStay && (hotelType === 'guestHouse' || hotelType === 'lodge')) {
+    hotelType = 'hotel';
+  }
+  return hotelType;
+}
+
 /** Create or update the Hotel listing so admin can review it in Hotels. */
 export async function upsertHotelFromProviderProfile(
   profile: Pick<
@@ -151,16 +169,7 @@ export async function upsertHotelFromProviderProfile(
   const lat = Number(details.latitude ?? profile.location?.coordinates?.[1] ?? 0);
   const lng = Number(details.longitude ?? profile.location?.coordinates?.[0] ?? 0);
 
-  const offersGuestStay = (profile.providerType ?? []).some(
-    (type) => type === 'guestHouse' || type === 'lodge'
-  );
-  let hotelType = mapHotelType(details.hotelType);
-  if (offersGuestStay && (hotelType === 'hotel' || hotelType === 'resort')) {
-    hotelType = 'guestHouse';
-  }
-  if (!offersGuestStay && (hotelType === 'guestHouse' || hotelType === 'lodge')) {
-    hotelType = 'hotel';
-  }
+  const hotelType = resolveHotelType(profile.providerType, details);
 
   const payload = {
     name,
@@ -203,7 +212,22 @@ export async function syncHotelListingsFromApplications() {
   });
   if (!profiles.length) return;
 
-  await Promise.all(profiles.map((profile) => upsertHotelFromProviderProfile(profile)));
+  const existing = await Hotel.find({
+    providerId: { $in: profiles.map((profile) => profile._id) },
+  }).select('providerId hotelType');
+  const existingByProvider = new Map(existing.map((hotel) => [hotel.providerId.toString(), hotel]));
+
+  // Existing listings only get their type corrected: providers edit name, photos,
+  // amenities etc. after approval, and this runs on every admin hotel-list load.
+  await Promise.all(
+    profiles.map((profile) => {
+      const hotel = existingByProvider.get(profile._id.toString());
+      if (!hotel) return upsertHotelFromProviderProfile(profile);
+      const hotelType = resolveHotelType(profile.providerType, asDetails(profile.hotelDetails));
+      if (hotel.hotelType === hotelType) return null;
+      return Hotel.updateOne({ _id: hotel._id }, { $set: { hotelType } });
+    })
+  );
 }
 
 async function roomHasAvailabilityForRange(
