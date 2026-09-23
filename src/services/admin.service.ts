@@ -169,6 +169,17 @@ export async function listProvidersAdmin(query: Record<string, unknown>) {
   const status = typeof query.status === 'string' ? query.status.trim() : '';
   if (status) filter.verificationStatus = status;
 
+  const providerType = typeof query.providerType === 'string' ? query.providerType.trim() : '';
+  const service = typeof query.service === 'string' ? query.service.trim() : '';
+  const typeClauses: Record<string, unknown>[] = [];
+  if (providerType) typeClauses.push({ providerType });
+  if (service) typeClauses.push({ services: service });
+  if (typeClauses.length === 1) {
+    Object.assign(filter, typeClauses[0]);
+  } else if (typeClauses.length > 1) {
+    filter.$and = [...((filter.$and as Record<string, unknown>[]) ?? []), { $or: typeClauses }];
+  }
+
   if (search) {
     const safeSearch = escapeRegex(search);
     filter.$or = [

@@ -136,7 +136,7 @@ function stringList(value: unknown): string[] {
 export async function upsertHotelFromProviderProfile(
   profile: Pick<
     IProviderProfile,
-    '_id' | 'services' | 'businessName' | 'description' | 'address' | 'city' | 'phone' | 'email' | 'location'
+    '_id' | 'services' | 'providerType' | 'businessName' | 'description' | 'address' | 'city' | 'phone' | 'email' | 'location'
   > & { hotelDetails?: IHotelDetails | Record<string, unknown> }
 ) {
   const offersHotel = (profile.services ?? []).some((service) => service === 'hotel');
@@ -151,10 +151,21 @@ export async function upsertHotelFromProviderProfile(
   const lat = Number(details.latitude ?? profile.location?.coordinates?.[1] ?? 0);
   const lng = Number(details.longitude ?? profile.location?.coordinates?.[0] ?? 0);
 
+  const offersGuestStay = (profile.providerType ?? []).some(
+    (type) => type === 'guestHouse' || type === 'lodge'
+  );
+  let hotelType = mapHotelType(details.hotelType);
+  if (offersGuestStay && (hotelType === 'hotel' || hotelType === 'resort')) {
+    hotelType = 'guestHouse';
+  }
+  if (!offersGuestStay && (hotelType === 'guestHouse' || hotelType === 'lodge')) {
+    hotelType = 'hotel';
+  }
+
   const payload = {
     name,
     description: String(details.description ?? profile.description ?? ''),
-    hotelType: mapHotelType(details.hotelType),
+    hotelType,
     address,
     city,
     phone: String(details.phone ?? profile.phone ?? ''),
@@ -192,16 +203,7 @@ export async function syncHotelListingsFromApplications() {
   });
   if (!profiles.length) return;
 
-  const existing = await Hotel.find({
-    providerId: { $in: profiles.map((profile) => profile._id) },
-  }).select('providerId');
-  const haveListing = new Set(existing.map((hotel) => hotel.providerId.toString()));
-
-  await Promise.all(
-    profiles
-      .filter((profile) => !haveListing.has(profile._id.toString()))
-      .map((profile) => upsertHotelFromProviderProfile(profile))
-  );
+  await Promise.all(profiles.map((profile) => upsertHotelFromProviderProfile(profile)));
 }
 
 async function roomHasAvailabilityForRange(
