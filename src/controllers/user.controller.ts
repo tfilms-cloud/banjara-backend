@@ -26,7 +26,8 @@ export async function updatePassword(req: AuthRequest, res: Response, next: Next
     const data = await userService.updatePassword(
       req.user!.id,
       req.body.currentPassword,
-      req.body.newPassword
+      req.body.newPassword,
+      req.user!.sessionId
     );
     return sendSuccess(res, data);
   } catch (error) {

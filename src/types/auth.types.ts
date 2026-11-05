@@ -10,6 +10,15 @@ export interface JwtPayload {
   sub: string;
   role: UserRole;
   email: string;
+  /** Session id. Absent only on tokens issued before per-device sessions. */
+  sid?: string;
+}
+
+/** Who is signing in, recorded on the session. */
+export interface SessionContext {
+  client: 'web-admin' | 'web-site' | 'mobile';
+  userAgent?: string;
+  ip?: string;
 }
 
 export interface RegisterInput {

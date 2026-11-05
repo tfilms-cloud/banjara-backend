@@ -4,6 +4,8 @@ import { ProviderProfile } from '../models/ProviderProfile';
 import { User } from '../models/User';
 import { AppError } from '../utils/AppError';
 import { getPagination, paginatedResult } from '../utils/pagination';
+import { log } from '../utils/logger';
+import * as notificationService from './notification.service';
 
 const MAX_MESSAGE_LENGTH = 4000;
 const MAX_ATTACHMENTS = 10;
@@ -99,16 +101,51 @@ export async function sendMessage(input: {
   }
 
   const conversationId = buildConversationId(input.senderId, input.receiverId);
+  const text = String(input.message).trim();
   const created = await Message.create({
     conversationId,
     senderId: input.senderId,
     receiverId: input.receiverId,
     bookingId: input.bookingId,
     type: input.type ?? 'text',
-    message: String(input.message).trim(),
+    message: text,
     attachments: input.attachments ?? [],
     status: 'sent',
   });
+
+  const sender = await User.findById(input.senderId).select('name').lean();
+  const senderName = sender?.name?.trim() || 'Someone';
+  const preview =
+    input.type === 'image'
+      ? 'Sent a photo'
+      : input.type === 'file'
+        ? 'Sent a file'
+        : input.type === 'location'
+          ? 'Shared a location'
+          : text.length > 140
+            ? `${text.slice(0, 137)}…`
+            : text;
+
+  void notificationService
+    .notifyUser({
+      userId: input.receiverId,
+      type: 'newMessage',
+      title: senderName,
+      message: preview,
+      data: {
+        conversationId,
+        senderId: input.senderId,
+        otherUserId: input.senderId,
+        bookingId: input.bookingId,
+      },
+    })
+    .catch((err) => {
+      log().error(
+        { conversationId, receiverId: input.receiverId, err },
+        '[message] notification failed'
+      );
+    });
+
   return serializeMessage(created);
 }
 

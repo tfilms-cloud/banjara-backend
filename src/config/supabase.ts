@@ -3,8 +3,19 @@ import { env } from './env';
 import { AppError } from '../utils/AppError';
 import { logger } from '../utils/logger';
 import { sniffImageType } from '../utils/imageSignature';
+import { STORAGE_UNAVAILABLE_MESSAGE, supabaseCredentialIssue } from '../utils/supabaseCredentials';
 
-export type UploadFolder = 'avatars' | 'vehicles' | 'hotels' | 'rooms' | 'logos' | 'chat';
+export type UploadFolder =
+  | 'avatars'
+  | 'vehicles'
+  | 'hotels'
+  | 'rooms'
+  | 'logos'
+  | 'chat'
+  | 'tours'
+  | 'guides'
+  | 'restaurants'
+  | 'payments';
 
 export const UPLOAD_FOLDERS: UploadFolder[] = [
   'avatars',
@@ -13,6 +24,10 @@ export const UPLOAD_FOLDERS: UploadFolder[] = [
   'rooms',
   'logos',
   'chat',
+  'tours',
+  'guides',
+  'restaurants',
+  'payments',
 ];
 
 let supabase: SupabaseClient | null = null;
@@ -23,11 +38,13 @@ export function isSupabaseConfigured() {
 }
 
 export function getSupabase() {
-  if (!isSupabaseConfigured()) {
-    throw new AppError('Supabase Storage is not configured on the server', 503);
+  const issue = supabaseCredentialIssue(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  if (issue) {
+    logger.error({ configuration: issue }, '[supabase] invalid server upload configuration');
+    throw new AppError(STORAGE_UNAVAILABLE_MESSAGE, 503);
   }
   if (!supabase) {
-    supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+    supabase = createClient(env.SUPABASE_URL.trim(), env.SUPABASE_SERVICE_ROLE_KEY.trim(), {
       auth: { persistSession: false, autoRefreshToken: false },
     });
   }
@@ -69,11 +86,7 @@ function describeStorageError(error: {
   }
 
   if (lower.includes('invalid jwt') || lower.includes('jwt')) {
-    return (
-      'Supabase rejected the API key (Invalid JWT). In Supabase Dashboard → Project Settings → API, ' +
-      'copy the legacy service_role key (starts with eyJ...) into SUPABASE_SERVICE_ROLE_KEY, ' +
-      'or use a valid secret key. Then restart the backend.'
-    );
+    return STORAGE_UNAVAILABLE_MESSAGE;
   }
 
   if (lower.includes('bucket') && (lower.includes('not found') || lower.includes('not exist'))) {
@@ -84,10 +97,7 @@ function describeStorageError(error: {
   }
 
   if (lower.includes('row-level security') || lower.includes('rls') || lower.includes('policy')) {
-    return (
-      'Supabase Storage blocked the upload (RLS/policy). Use the service_role/secret key on the server, ' +
-      'and ensure the bucket allows uploads.'
-    );
+    return STORAGE_UNAVAILABLE_MESSAGE;
   }
 
   return message;
@@ -150,6 +160,9 @@ export async function uploadImageBuffer(input: {
   userId: string;
   originalName?: string;
 }) {
+  if (input.folder === 'payments') {
+    throw new AppError('Payment files must use private payment storage', 400);
+  }
   if (!input.mime.startsWith('image/')) {
     throw new AppError('Only image uploads are allowed', 400);
   }

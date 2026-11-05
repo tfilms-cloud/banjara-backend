@@ -36,6 +36,8 @@ export interface ITrip {
   journeyType: 'one_way' | 'round_trip';
   returnDate?: string;
   returnTime?: string;
+  /** seat = per-seat sales; vehicle = whole-vehicle hire */
+  bookingMode: 'seat' | 'vehicle';
   description?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -87,6 +89,12 @@ const tripSchema = new Schema<ITrip>(
     },
     returnDate: String,
     returnTime: String,
+    bookingMode: {
+      type: String,
+      enum: ['seat', 'vehicle'],
+      default: 'seat',
+      index: true,
+    },
     status: {
       type: String,
       enum: ['scheduled', 'boarding', 'departed', 'inTransit', 'completed', 'cancelled'],

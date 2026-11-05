@@ -1,7 +1,16 @@
-export type BookingType = 'transport' | 'hotel' | 'package';
-export type BookingStatus = 'pending' | 'confirmed' | 'cancelled' | 'completed' | 'refunded';
-export type PaymentStatus = 'pending' | 'paid' | 'failed' | 'refunded';
-export type PaymentMethod = 'card' | 'mobileWallet' | 'cash' | 'payAtHotel';
+export type BookingType = 'transport' | 'hotel' | 'package' | 'guide';
+export type BookingStatus =
+  | 'pending'
+  | 'confirmed'
+  | 'cancelled'
+  | 'completed'
+  | 'refunded'
+  | 'payment_verification'
+  | 'expired'
+  | 'disputed';
+
+export type { PaymentMethod, PaymentStatus } from './payment.types';
+export { isP2PMethod, P2P_METHODS } from './payment.types';
 
 export interface GeoPoint {
   name: string;
@@ -53,4 +62,37 @@ export interface HotelBookingDetails {
   pricePerNight?: number;
   nightlyRates?: Array<{ date: string; rate: number }>;
   stayStatus?: 'booked' | 'checked_in' | 'checked_out';
+}
+
+export interface PackageBookingDetails {
+  itineraryId: string;
+  startDate: string;
+  travelers: number;
+  guestDetails: GuestDetail;
+  title: string;
+  tourType: string;
+  destination: string;
+  durationDays: number;
+  pricePerPerson: number;
+  currency?: string;
+}
+
+export interface GuideBookingDetails {
+  serviceId?: string;
+  serviceName: string;
+  date: string;
+  startTime: string;
+  endTime?: string;
+  durationHours?: number;
+  guests: number;
+  meetingPoint?: string;
+  availableLocation?: string;
+  specialRequest?: string;
+  pricingType: 'per_person' | 'per_group' | 'per_hour' | 'per_day' | 'custom';
+  unitPrice: number;
+  currency?: string;
+  guestDetails: GuestDetail;
+  rejectionReason?: string;
+  cancellationReason?: string;
+  serviceStatus?: 'pending' | 'accepted' | 'in_progress' | 'completed' | 'no_show';
 }

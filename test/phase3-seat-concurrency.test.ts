@@ -36,7 +36,7 @@ async function makeTripFixture(app: ReturnType<typeof createApp>) {
 function bookingBody(tripId: string, seats: string[], passengerCount = seats.length) {
   return {
     bookingType: 'transport',
-    paymentMethod: 'card',
+    paymentMethod: 'cash',
     transportBooking: {
       tripId,
       seats,
@@ -82,7 +82,7 @@ describe('Phase 3.1 — atomic seat reservation', () => {
     const trip = await Trip.findById(tripId);
     const a1 = trip!.seatLayout.filter((s) => s.seatNumber === 'A1');
     expect(a1).toHaveLength(1);
-    expect(a1[0].status).toBe('booked');
+    expect(a1[0].status).toBe('reserved'); // Provider acceptance finalizes this hold.
     expect(trip!.availableSeats).toBe(9);
     expect(trip!.bookedSeats).toBe(1);
 

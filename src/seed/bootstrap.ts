@@ -32,7 +32,7 @@ async function bootstrap() {
   await User.create({
     name: 'BANJARA Admin',
     email,
-    phone: '',
+    phone: '+92 300 0000001',
     passwordHash,
     role: 'admin',
     status: 'active',

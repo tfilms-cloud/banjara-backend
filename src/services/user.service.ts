@@ -1,6 +1,7 @@
 import { User } from '../models/User';
 import { AppError, assertFound } from '../utils/AppError';
 import { comparePassword, hashPassword } from '../utils/password';
+import { revokeAllSessions } from './session.service';
 
 export async function getMe(userId: string) {
   const user = assertFound(await User.findById(userId), 'User not found');
@@ -38,7 +39,16 @@ export async function updateMe(
   return user.toSafeJSON();
 }
 
-export async function updatePassword(userId: string, currentPassword: string, newPassword: string) {
+/**
+ * Changes the password and signs out every other device. The device making the change
+ * (`currentSessionId`) stays signed in.
+ */
+export async function updatePassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+  currentSessionId?: string
+) {
   const user = assertFound(
     await User.findById(userId).select('+passwordHash'),
     'User not found'
@@ -47,7 +57,8 @@ export async function updatePassword(userId: string, currentPassword: string, ne
   if (!ok) throw new AppError('Current password is incorrect', 400);
   user.passwordHash = await hashPassword(newPassword);
   await user.save();
-  return { message: 'Password updated' };
+  const signedOut = await revokeAllSessions(userId, 'password-changed', currentSessionId);
+  return { message: 'Password updated', otherDevicesSignedOut: signedOut };
 }
 
 export async function updateAvatar(userId: string, avatarUrl: string) {

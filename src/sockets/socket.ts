@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { Server, type Socket } from 'socket.io';
 import { env } from '../config/env';
 import { verifyAccessToken } from '../utils/jwt';
+import { isSessionActive } from '../services/session.service';
 import { Booking } from '../models/Booking';
 import { ProviderProfile } from '../models/ProviderProfile';
 import { Trip } from '../models/Trip';
@@ -96,6 +97,13 @@ function otherParticipant(conversationId: string, userId: string) {
   return a === userId ? b : a;
 }
 
+let ioSingleton: Server | null = null;
+
+/** Safe accessor for services that emit to online users (notifications, presence). */
+export function getIO(): Server | null {
+  return ioSingleton;
+}
+
 export function initSocket(httpServer: HttpServer) {
   const allowedOrigins = [
     env.CLIENT_URL,
@@ -112,13 +120,15 @@ export function initSocket(httpServer: HttpServer) {
     },
   });
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     try {
       const token =
         (socket.handshake.auth?.token as string | undefined) ||
         (socket.handshake.headers.authorization?.replace('Bearer ', '') as string | undefined);
       if (!token) return next(new Error('Unauthorized'));
       const payload = verifyAccessToken(token);
+      // Same rule as HTTP: a signed-out device cannot open a live connection.
+      if (payload.sid && !(await isSessionActive(payload.sid))) return next(new Error('Unauthorized'));
       socket.data.userId = payload.sub;
       next();
     } catch {
@@ -359,5 +369,6 @@ export function initSocket(httpServer: HttpServer) {
     });
   });
 
+  ioSingleton = io;
   return io;
 }

@@ -26,6 +26,17 @@ export async function listProviderReviews(req: AuthRequest, res: Response, next:
   }
 }
 
+export async function getReviewForBooking(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    return sendSuccess(
+      res,
+      await reviewService.getReviewForBooking(req.user!.id, paramId(req.params.bookingId))
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function updateReview(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     return sendSuccess(res, await reviewService.updateReview(req.user!.id, paramId(req.params.id), req.body));
@@ -86,6 +97,76 @@ export async function readNotification(req: AuthRequest, res: Response, next: Ne
 export async function readAllNotifications(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     return sendSuccess(res, await notificationService.markAllRead(req.user!.id));
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function registerDeviceToken(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const platform = String(req.body?.platform ?? 'android');
+    if (!['ios', 'android', 'web'].includes(platform)) {
+      throw new AppError('Invalid platform', 400);
+    }
+    const appRole = req.body?.appRole === 'provider' ? 'provider' : 'customer';
+    const data = await notificationService.registerDeviceToken({
+      userId: req.user!.id,
+      token: String(req.body?.token ?? ''),
+      platform: platform as 'ios' | 'android' | 'web',
+      appRole,
+    });
+    return sendSuccess(res, data, 'Device registered for push', 201);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function unregisterDeviceToken(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const token = req.body?.token ? String(req.body.token) : undefined;
+    return sendSuccess(
+      res,
+      await notificationService.unregisterDeviceToken(req.user!.id, token),
+      'Device unregistered'
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getNotificationPreferences(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    return sendSuccess(res, await notificationService.getPreferences(req.user!.id));
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateNotificationPreferences(
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const allowed = [
+      'pushEnabled',
+      'bookings',
+      'payments',
+      'messages',
+      'trips',
+      'offers',
+      'reviews',
+      'system',
+    ] as const;
+    const patch: Record<string, boolean> = {};
+    for (const key of allowed) {
+      if (typeof req.body?.[key] === 'boolean') patch[key] = req.body[key];
+    }
+    return sendSuccess(
+      res,
+      await notificationService.updatePreferences(req.user!.id, patch),
+      'Preferences updated'
+    );
   } catch (error) {
     next(error);
   }

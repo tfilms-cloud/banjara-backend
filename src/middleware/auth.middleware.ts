@@ -4,6 +4,7 @@ import { ProviderProfile } from '../models/ProviderProfile';
 import type { UserRole } from '../types/auth.types';
 import { AppError } from '../utils/AppError';
 import { verifyAccessToken } from '../utils/jwt';
+import { isSessionActive } from '../services/session.service';
 
 export interface AuthRequest extends Request {
   user?: {
@@ -11,6 +12,9 @@ export interface AuthRequest extends Request {
     role: UserRole;
     email: string;
     providerId?: string;
+    /** This device's session, for sign-out and "this device" in the session list. */
+    sessionId?: string;
+    twoFactorEnabled?: boolean;
   };
 }
 
@@ -22,6 +26,11 @@ export async function authenticate(req: AuthRequest, _res: Response, next: NextF
     }
     const token = header.slice(7);
     const payload = verifyAccessToken(token);
+    // A signed-out or revoked device loses access at once, not when its
+    // 15-minute access token runs out. (Pre-session tokens carry no sid.)
+    if (payload.sid && !(await isSessionActive(payload.sid))) {
+      throw new AppError('Session has ended. Please sign in again.', 401);
+    }
     const user = await User.findById(payload.sub);
     if (!user || user.status !== 'active') {
       throw new AppError('Invalid or inactive account', 401);
@@ -38,6 +47,8 @@ export async function authenticate(req: AuthRequest, _res: Response, next: NextF
       role: user.role,
       email: user.email,
       providerId,
+      sessionId: payload.sid,
+      twoFactorEnabled: Boolean(user.twoFactor?.enabled),
     };
     next();
   } catch (error) {

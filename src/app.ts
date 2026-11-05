@@ -10,6 +10,7 @@ import { logger, requestContext } from './utils/logger';
 import { globalRateLimiter } from './middleware/rateLimit.middleware';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 import { sendSuccess } from './utils/apiResponse';
+import { AppError } from './utils/AppError';
 
 import authRoutes from './routes/auth.routes';
 import userRoutes from './routes/user.routes';
@@ -31,6 +32,11 @@ import messageRoutes from './routes/message.routes';
 import supportRoutes from './routes/support.routes';
 import adminRoutes from './routes/admin.routes';
 import uploadRoutes from './routes/upload.routes';
+import tourItineraryRoutes from './routes/tourItinerary.routes';
+import serviceCatalogRoutes from './routes/serviceCatalog.routes';
+import guideRoutes from './routes/guide.routes';
+import discoverRoutes from './routes/discover.routes';
+import verificationRoutes from './routes/verification.routes';
 
 export function createApp() {
   const app = express();
@@ -38,7 +44,17 @@ export function createApp() {
   // Required on Railway / Render / Nginx so rate-limit and IPs work.
   app.set('trust proxy', 1);
 
-  app.use(helmet());
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        useDefaults: true,
+        directives: {
+          "img-src": ["'self'", 'data:', 'blob:', 'https:'],
+        },
+      },
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    })
+  );
 
   const allowedOrigins = [
     env.CLIENT_URL,
@@ -53,7 +69,7 @@ export function createApp() {
         // Mobile native apps and server-to-server calls often send no Origin header.
         if (!origin) return callback(null, true);
         if (allowedOrigins.includes(origin)) return callback(null, true);
-        return callback(new Error(`CORS blocked for origin: ${origin}`));
+        return callback(new AppError('Origin not allowed', 403));
       },
       credentials: true,
     })
@@ -95,7 +111,6 @@ export function createApp() {
       next();
     });
   });
-  app.use(globalRateLimiter);
 
   app.get('/api/health', (_req, res) => {
     const dbState = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
@@ -105,6 +120,7 @@ export function createApp() {
   // Readiness: unlike liveness this must fail when a dependency is down, so orchestrators
   // and load balancers stop routing traffic to a process that cannot serve it.
   app.get('/api/ready', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
     const dbState = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
     if (mongoose.connection.readyState !== 1) {
       return res.status(503).json({
@@ -117,6 +133,8 @@ export function createApp() {
     return sendSuccess(res, { database: dbState }, 'Banjara API is ready');
   });
 
+  // Readiness polling must not consume the shared business API request quota.
+  app.use(globalRateLimiter);
   app.use('/api/auth', authRoutes);
   app.use('/api/users', userRoutes);
   app.use('/api/providers', providerRoutes);
@@ -136,6 +154,11 @@ export function createApp() {
   app.use('/api/messages', messageRoutes);
   app.use('/api/support', supportRoutes);
   app.use('/api/admin', adminRoutes);
+  app.use('/api/tour-itineraries', tourItineraryRoutes);
+  app.use('/api/services', serviceCatalogRoutes);
+  app.use('/api/guides', guideRoutes);
+  app.use('/api/discover', discoverRoutes);
+  app.use('/api/verification', verificationRoutes);
   app.use('/api/uploads', uploadRoutes);
 
   app.use(notFoundHandler);

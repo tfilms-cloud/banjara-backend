@@ -80,7 +80,7 @@ describe('Phase 2.1 — payment read/refund authorization', () => {
     expect(res.status).toBe(200);
 
     const after = await Payment.findById(payment._id);
-    expect(after?.status).toBe('refunded');
+    expect(after?.status).toBe('refund_pending');
   });
 
   it('forbids a customer from refunding even their own payment', async () => {

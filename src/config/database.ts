@@ -3,12 +3,10 @@ import { env } from './env';
 import { logger } from '../utils/logger';
 
 /**
- * Whether the booking flow is wrapped in a MongoDB transaction. It currently is not —
- * production topology is unconfirmed and a standalone node cannot run transactions.
- * Set this to true if/when the booking flow is made transactional; the startup check
- * will then refuse to boot a standalone server in production.
+ * Payment confirmation, cancellation and expiry require multi-document transactions.
+ * Refuse a standalone database in production rather than partially applying them.
  */
-export const TRANSACTIONS_REQUIRED = false;
+export const TRANSACTIONS_REQUIRED = true;
 
 /** A `hello` response identifies a replica set via its `setName`. */
 export function isReplicaSetHello(hello: { setName?: unknown } | null | undefined): boolean {
@@ -30,7 +28,7 @@ async function assertTransactionCapability(): Promise<void> {
 
   const message =
     'MongoDB is running as a standalone node: multi-document transactions are unavailable. ' +
-    'Booking consistency currently relies on compensating actions. Use a replica set in production.';
+    'Payment transitions require a replica set. Payment mutations will refuse to run on a standalone node.';
 
   if (TRANSACTIONS_REQUIRED && env.NODE_ENV === 'production') {
     logger.error(message);

@@ -8,6 +8,12 @@ import { createReviewSchema, replyReviewSchema, updateReviewSchema } from '../va
 const router = Router();
 
 router.get('/provider/:providerId', misc.listProviderReviews);
+router.get(
+  '/booking/:bookingId',
+  authenticate,
+  requireRole('customer'),
+  misc.getReviewForBooking
+);
 router.post('/', authenticate, requireRole('customer'), validate(createReviewSchema), misc.createReview);
 router.put('/:id', authenticate, requireRole('customer'), validate(updateReviewSchema), misc.updateReview);
 router.post('/:id/reply', authenticate, requireRole('provider'), validate(replyReviewSchema), misc.replyReview);

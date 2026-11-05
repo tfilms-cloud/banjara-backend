@@ -45,7 +45,12 @@ export async function getById(req: AuthRequest, res: Response, next: NextFunctio
 
 export async function cancel(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    return sendSuccess(res, await bookingService.cancelBooking(paramId(req.params.id), req.user!), 'Booking cancelled');
+    const replaced = Boolean(req.body?.replaced);
+    return sendSuccess(
+      res,
+      await bookingService.cancelBooking(paramId(req.params.id), req.user!, { replaced }),
+      'Booking cancelled'
+    );
   } catch (error) {
     next(error);
   }
@@ -77,6 +82,20 @@ export async function updateStatus(req: AuthRequest, res: Response, next: NextFu
       res,
       await bookingService.updateProviderBookingStatus(paramId(req.params.id), req.user.providerId, status),
       'Booking status updated'
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
+/** Driver records that a cash booking was paid in person. */
+export async function markCashReceived(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    if (!req.user?.providerId) throw new AppError('Provider profile required', 403);
+    return sendSuccess(
+      res,
+      await bookingService.markCashReceived(paramId(req.params.id), req.user.providerId, req.user.id),
+      'Cash payment recorded'
     );
   } catch (error) {
     next(error);

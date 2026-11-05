@@ -270,6 +270,7 @@ export async function createTrip(
     journeyType?: 'one_way' | 'round_trip';
     returnDate?: string;
     returnTime?: string;
+    bookingMode?: 'seat' | 'vehicle';
   }
 ) {
   await assertTransportProvider(providerId);
@@ -283,6 +284,8 @@ export async function createTrip(
   if (journeyType === 'round_trip' && (!input.returnDate || !input.returnTime)) {
     throw new AppError('Round trip needs a return date and return time', 422);
   }
+
+  const bookingMode = input.bookingMode === 'vehicle' ? 'vehicle' : 'seat';
 
   const pickupPointIds = await resolvePickupPointIds(providerId, input.pickupPoints);
   const dropoffPointIds = await resolvePickupPointIds(providerId, input.dropoffPoints);
@@ -310,9 +313,24 @@ export async function createTrip(
     journeyType,
     returnDate: journeyType === 'round_trip' ? input.returnDate : undefined,
     returnTime: journeyType === 'round_trip' ? input.returnTime : undefined,
+    bookingMode,
     status: 'scheduled',
   });
 }
+
+/**
+ * Provider fields that travel with a public trip. Rides are offered by individual
+ * local drivers, so identity documents (CNIC, licence, address, emergency contact,
+ * engine and insurance numbers) must never be included here.
+ */
+const PUBLIC_TRIP_PROVIDER_FIELDS = [
+  'businessName ownerName logo rating totalReviews verificationStatus phone email',
+  'description city address yearsExperience website services userId',
+  'transportDetails.businessName transportDetails.description transportDetails.vehicleClass',
+  'transportDetails.vehicleTypes transportDetails.vehicleModel transportDetails.operatingCities',
+  'transportDetails.operatingRoutes transportDetails.pricingMethod transportDetails.priceAmount',
+  'transportDetails.driverName transportDetails.driverPhoto transportDetails.driverExperienceYears',
+].join(' ');
 
 export async function searchTrips(query: Record<string, unknown>) {
   const { page, limit, skip } = getPagination(query);
@@ -323,6 +341,9 @@ export async function searchTrips(query: Record<string, unknown>) {
   if (query.date) filter.departureDate = query.date;
   if (query.journeyType === 'one_way' || query.journeyType === 'round_trip') {
     filter.journeyType = query.journeyType;
+  }
+  if (query.bookingMode === 'seat' || query.bookingMode === 'vehicle') {
+    filter.bookingMode = query.bookingMode;
   }
   if (query.providerId) {
     filter.providerId = String(query.providerId);
@@ -342,9 +363,11 @@ export async function searchTrips(query: Record<string, unknown>) {
     Trip.find(filter)
       .populate(
         'providerId',
-        'businessName logo rating totalReviews verificationStatus phone email description'
+        PUBLIC_TRIP_PROVIDER_FIELDS
       )
       .populate('vehicleId')
+      .populate('pickupPoints')
+      .populate('dropoffPoints')
       .sort(sort)
       .skip(skip)
       .limit(limit),
@@ -358,15 +381,21 @@ export async function listTrips(providerId?: string) {
   return Trip.find(providerId ? { providerId } : {})
     .populate(
       'providerId',
-      'businessName logo rating totalReviews verificationStatus phone email description'
+      PUBLIC_TRIP_PROVIDER_FIELDS
     )
     .populate('vehicleId')
+    .populate('pickupPoints')
+    .populate('dropoffPoints')
     .sort({ departureDate: 1, departureTime: 1 });
 }
 
 export async function getTrip(id: string) {
   const trip = assertFound(
-    await Trip.findById(id).populate('providerId').populate('vehicleId').populate('pickupPoints'),
+    await Trip.findById(id)
+      .populate('providerId', PUBLIC_TRIP_PROVIDER_FIELDS)
+      .populate('vehicleId')
+      .populate('pickupPoints')
+      .populate('dropoffPoints'),
     'Trip not found'
   );
 
@@ -401,6 +430,7 @@ const TRIP_PROVIDER_FIELDS = [
   'journeyType',
   'returnDate',
   'returnTime',
+  'bookingMode',
 ] as const;
 
 export async function updateTrip(providerId: string, id: string, patch: Record<string, unknown>) {
@@ -409,12 +439,21 @@ export async function updateTrip(providerId: string, id: string, patch: Record<s
 
   const update: Record<string, unknown> = {};
   for (const field of TRIP_PROVIDER_FIELDS) {
-    if (patch[field] !== undefined) update[field] = patch[field];
+    if (patch[field] === undefined) continue;
+    if (field === 'pickupPoints' || field === 'dropoffPoints') {
+      const values = Array.isArray(patch[field]) ? patch[field].map(String) : [];
+      update[field] = await resolvePickupPointIds(providerId, values);
+      continue;
+    }
+    update[field] = patch[field];
   }
 
   Object.assign(trip, update);
   await trip.save();
-  return trip;
+  return Trip.findById(trip._id)
+    .populate('vehicleId')
+    .populate('pickupPoints')
+    .populate('dropoffPoints');
 }
 
 export async function deleteTrip(providerId: string, id: string) {

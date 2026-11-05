@@ -8,9 +8,10 @@ export type ProviderType =
   | 'hotel'
   | 'resort'
   | 'guestHouse'
-  | 'lodge';
+  | 'lodge'
+  | 'restaurant';
 
-export type ProviderService = 'transport' | 'hotel' | 'tour' | 'carRental' | 'travelGuide';
+export type ProviderService = string;
 
 export type VerificationStatus = 'pending' | 'approved' | 'rejected' | 'suspended';
 

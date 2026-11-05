@@ -9,10 +9,12 @@ import { Room } from '../models/Room';
 import { RoomAvailability } from '../models/RoomAvailability';
 import { Booking } from '../models/Booking';
 import { Payment } from '../models/Payment';
+import { PaymentMessage } from '../models/PaymentMessage';
 import { Notification } from '../models/Notification';
 import { Message } from '../models/Message';
 import { SupportTicket } from '../models/SupportTicket';
 import { env } from '../config/env';
+import { signPaymentFile } from './paymentFiles.service';
 import { AppError, assertFound } from '../utils/AppError';
 import { getPagination, paginatedResult } from '../utils/pagination';
 import { escapeRegex } from '../utils/regex';
@@ -206,7 +208,8 @@ export async function listProvidersAdmin(query: Record<string, unknown>) {
 export async function setProviderStatus(
   providerId: string,
   status: VerificationStatus,
-  reason?: string
+  reason?: string,
+  adminId?: string
 ) {
   const update: Record<string, unknown> = { verificationStatus: status };
   if (status === 'approved') {
@@ -216,8 +219,9 @@ export async function setProviderStatus(
   }
 
   // Avoid mixing top-level fields with operators incorrectly when $unset is present
+  let profile;
   if (update.$unset) {
-    return assertFound(
+    profile = assertFound(
       await ProviderProfile.findByIdAndUpdate(
         providerId,
         { $set: { verificationStatus: status }, $unset: { rejectionReason: 1 } },
@@ -225,10 +229,66 @@ export async function setProviderStatus(
       ),
       'Provider not found'
     );
+  } else {
+    profile = assertFound(
+      await ProviderProfile.findByIdAndUpdate(providerId, update, { new: true, runValidators: true }),
+      'Provider not found'
+    );
   }
 
+  // Ensure signup transport details become a Vehicle row when admin approves
+  if (status === 'approved' && (profile.services ?? []).includes('transport')) {
+    await vehicleService.upsertVehicleFromTransportDetails(
+      providerId,
+      profile.transportDetails as Record<string, unknown> | undefined
+    );
+    // Transport providers are local drivers who register the one vehicle they drive,
+    // and the admin reviewed that vehicle (photos, registration, insurance) as part of
+    // this application. Approving the driver approves it too, so they can publish
+    // trips straight away instead of waiting on a second, separate approval.
+    if (adminId) {
+      const pending = await Vehicle.find({ providerId, status: 'pending' }).select('_id');
+      for (const vehicle of pending) {
+        await vehicleService.approveVehicle(vehicle._id.toString(), adminId);
+      }
+    }
+  }
+
+  // Sync guide profileStatus with admin verification
+  if ((profile.services ?? []).includes('travelGuide')) {
+    const guide = { ...((profile.guideDetails as Record<string, unknown>) ?? {}) };
+    if (status === 'approved') {
+      guide.profileStatus = 'approved';
+      delete guide.changesRequestedNote;
+    } else if (status === 'rejected') {
+      guide.profileStatus = 'rejected';
+      if (reason) guide.changesRequestedNote = String(reason).trim();
+    } else if (status === 'suspended') {
+      guide.profileStatus = 'suspended';
+      if (reason) guide.changesRequestedNote = String(reason).trim();
+    } else if (status === 'pending') {
+      guide.profileStatus = 'pending';
+    }
+    profile.set('guideDetails', guide);
+    profile.markModified('guideDetails');
+    await profile.save();
+  }
+
+  return profile;
+}
+
+/** Admin sets BANJARA commission % for this provider (0.2 = 0.2%, 20 = 20%). */
+export async function setProviderPlatformFee(providerId: string, platformFeePercent: number) {
+  const percent = Number(platformFeePercent);
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+    throw new AppError('platformFeePercent must be between 0 and 100', 400);
+  }
   return assertFound(
-    await ProviderProfile.findByIdAndUpdate(providerId, update, { new: true, runValidators: true }),
+    await ProviderProfile.findByIdAndUpdate(
+      providerId,
+      { $set: { platformFeePercent: percent } },
+      { new: true, runValidators: true }
+    ),
     'Provider not found'
   );
 }
@@ -246,6 +306,23 @@ export async function getCustomerDetail(customerId: string) {
 }
 
 export async function listVehicles(query: Record<string, unknown> = {}) {
+  // Backfill Vehicle docs from transporter signup data that never created fleet rows
+  const transportProviders = await ProviderProfile.find({
+    services: 'transport',
+    'transportDetails.registrationNumber': { $exists: true, $nin: [null, ''] },
+  })
+    .select('_id transportDetails')
+    .limit(200);
+
+  await Promise.all(
+    transportProviders.map((profile) =>
+      vehicleService.upsertVehicleFromTransportDetails(
+        profile._id.toString(),
+        profile.transportDetails as Record<string, unknown> | undefined
+      )
+    )
+  );
+
   const filter: Record<string, unknown> = {};
   if (typeof query.status === 'string' && query.status.trim()) {
     filter.status = query.status.trim();
@@ -277,6 +354,7 @@ export async function listVehicles(query: Record<string, unknown> = {}) {
 export async function getVehicle(id: string) {
   const vehicle = assertFound(
     await Vehicle.findById(id)
+      .select('+verificationDetails')
       .populate('providerId', 'businessName ownerName verificationStatus rating totalReviews phone email city')
       .populate('approvedBy', 'name email')
       .populate('rejectedBy', 'name email')
@@ -404,23 +482,58 @@ export async function getBooking(id: string) {
   );
 }
 
-export async function listPayments() {
-  return Payment.find()
+export async function listPayments(query: Record<string, unknown> = {}) {
+  const filter: Record<string, unknown> = {};
+  if (typeof query.status === 'string' && query.status.trim()) {
+    filter.status = query.status.trim();
+  }
+  if (typeof query.method === 'string' && query.method.trim()) {
+    filter.method = query.method.trim();
+  }
+  if (query.disputed === 'true' || query.disputed === true) {
+    filter.status = { $in: ['rejected', 'disputed'] };
+  }
+  if (query.pendingVerification === 'true' || query.pendingVerification === true) {
+    filter.status = { $in: ['proof_submitted', 'under_review'] };
+  }
+
+  return Payment.find(filter)
     .populate('customerId', 'name email')
     .populate('providerId', 'businessName')
-    .populate('bookingId', 'bookingNumber bookingType totalAmount')
+    .populate('bookingId', 'bookingNumber bookingType totalAmount bookingStatus')
     .sort({ createdAt: -1 })
-    .limit(200);
+    .limit(300);
 }
 
 export async function getPayment(id: string) {
-  return assertFound(
+  const payment = assertFound(
     await Payment.findById(id)
       .populate('customerId', 'name email phone')
       .populate('providerId', 'businessName')
       .populate('bookingId'),
     'Payment not found'
   );
+
+  const messages = await PaymentMessage.find({ paymentId: payment._id })
+    .sort({ createdAt: 1 })
+    .limit(300);
+
+  const obj = payment.toObject();
+  return {
+    ...obj,
+    proof: obj.proof ? { ...obj.proof, receiptUrls: await Promise.all(obj.proof.receiptUrls.map(signPaymentFile)) } : undefined,
+    refund: obj.refund ? { ...obj.refund, receiptUrls: await Promise.all(obj.refund.receiptUrls.map(signPaymentFile)) } : undefined,
+    id: payment._id.toString(),
+    messages: await Promise.all(messages.map(async (m) => ({
+      id: m._id.toString(),
+      senderRole: m.senderRole,
+      kind: m.kind,
+      text: m.text,
+      imageUrl: m.imageUrl ? await signPaymentFile(m.imageUrl) : undefined,
+      referenceNumber: m.referenceNumber,
+      createdAt: m.createdAt,
+    }))),
+  };
 }
 
 export async function listNotificationsAdmin() {

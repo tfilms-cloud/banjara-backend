@@ -1,3 +1,4 @@
+import type { ClientSession } from 'mongoose';
 import { Vehicle } from '../models/Vehicle';
 import { Trip } from '../models/Trip';
 import { ProviderProfile } from '../models/ProviderProfile';
@@ -5,6 +6,7 @@ import { AdminAuditLog } from '../models/AdminAuditLog';
 import { AppError, assertFound } from '../utils/AppError';
 import { assertApprovedProvider } from './provider.service';
 import * as notificationService from './notification.service';
+import { transportErrors, vehicleRegistrationErrors } from '../utils/transportValidation';
 
 const VEHICLE_TYPES = [
   'van',
@@ -14,14 +16,57 @@ const VEHICLE_TYPES = [
   'tourVehicle',
   'coaster',
   'suv',
+  'jeep',
   'other',
 ] as const;
 
 type VehicleType = (typeof VEHICLE_TYPES)[number];
 
+const VEHICLE_TYPE_ALIASES: Record<string, VehicleType> = {
+  van: 'van',
+  bus: 'bus',
+  car: 'car',
+  minibus: 'minibus',
+  mini_bus: 'minibus',
+  'mini-bus': 'minibus',
+  tourvehicle: 'tourVehicle',
+  tour_vehicle: 'tourVehicle',
+  coaster: 'coaster',
+  suv: 'suv',
+  // A jeep used to be stored as "suv" (the model had no jeep type), so drivers who
+  // picked Jeep saw "SUV". Vehicles saved before this keep "suv".
+  jeep: 'jeep',
+  other: 'other',
+};
+
 function normalizeVehicleType(value: unknown): VehicleType {
-  const type = String(value ?? 'other');
-  return (VEHICLE_TYPES as readonly string[]).includes(type) ? (type as VehicleType) : 'other';
+  const raw = String(value ?? 'other')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_');
+  if ((VEHICLE_TYPES as readonly string[]).includes(raw)) return raw as VehicleType;
+  return VEHICLE_TYPE_ALIASES[raw] ?? 'other';
+}
+
+function defaultSeatCountForType(type: VehicleType): number {
+  switch (type) {
+    case 'bus':
+      return 40;
+    case 'minibus':
+    case 'coaster':
+      return 14;
+    case 'van':
+      return 8;
+    case 'suv':
+      return 6;
+    case 'jeep':
+      return 5;
+    case 'tourVehicle':
+      return 10;
+    case 'car':
+    default:
+      return 4;
+  }
 }
 
 function normalizeCreateInput(input: Record<string, unknown>) {
@@ -46,30 +91,138 @@ function normalizeCreateInput(input: Record<string, unknown>) {
       | undefined,
     amenities: Array.isArray(input.amenities) ? input.amenities.map(String) : [],
     images: Array.isArray(input.images) ? input.images.map(String) : [],
+    verificationDetails: input.verificationDetails as Record<string, unknown> | undefined,
     status: 'pending' as const,
   };
 }
 
+/** Each transport provider is one driver with one vehicle. */
+export const MAX_VEHICLES_PER_DRIVER = 1;
+
 export async function createVehicle(providerId: string, input: Record<string, unknown>) {
-  await assertApprovedProvider(providerId);
+  const profile = assertFound(await ProviderProfile.findById(providerId), 'Provider profile not found');
+  const onboarding = profile.verificationStatus === 'pending' && profile.services.includes('transport');
+  if (!onboarding) await assertApprovedProvider(providerId);
+  // Rides are offered by individual local drivers, each driving their own single vehicle.
+  // A rejected vehicle does not count, so the driver can register a corrected one.
+  const current = await Vehicle.countDocuments({ providerId, status: { $ne: 'rejected' } });
+  if (current >= MAX_VEHICLES_PER_DRIVER) {
+    throw new AppError(
+      'You already have a registered vehicle. Drivers can register one vehicle; edit it instead of adding another.',
+      409
+    );
+  }
+  if (onboarding || input.verificationDetails) {
+    const errors = transportErrors(input.verificationDetails as Record<string, unknown>);
+    if (errors.length) throw new AppError(errors.join('\n'), 422);
+  }
+  const normalized = normalizeCreateInput(input);
+  if ((onboarding || input.verificationDetails) && vehicleRegistrationErrors(normalized).length) {
+    throw new AppError(vehicleRegistrationErrors(normalized).join('\n'), 422);
+  }
   return Vehicle.create({
-    ...normalizeCreateInput(input),
+    ...normalized,
+    registrationCompletedAt: normalized.verificationDetails ? new Date() : undefined,
     providerId,
   });
+}
+
+/**
+ * Creates or updates a Vehicle document from transporter signup `transportDetails`.
+ * Pending providers may upsert — admin still must approve the vehicle before trips.
+ */
+export async function upsertVehicleFromTransportDetails(
+  providerId: string,
+  transport: Record<string, unknown> | null | undefined,
+  refresh = false,
+  session?: ClientSession
+) {
+  if (!transport || typeof transport !== 'object') return null;
+
+  const registrationNumber = String(transport.registrationNumber ?? '').trim();
+  if (!registrationNumber) return null;
+
+  const vehicleClass = String(
+    transport.vehicleClass ??
+      (Array.isArray(transport.vehicleTypes) ? transport.vehicleTypes[0] : '') ??
+      'other'
+  );
+  const type = normalizeVehicleType(vehicleClass);
+  const vehicleModel = String(transport.vehicleModel ?? transport.model ?? 'Unknown').trim() || 'Unknown';
+  const yearRaw = Number(transport.vehicleMakeYear ?? transport.year);
+  const year =
+    Number.isFinite(yearRaw) && yearRaw >= 1980 && yearRaw <= 2100
+      ? Math.trunc(yearRaw)
+      : new Date().getFullYear();
+  // transportDetails.businessName is now the driver's own name, so name the vehicle after itself.
+  const name = `${vehicleModel} (${registrationNumber})`;
+  const images = [
+    String(transport.vehicleImageFront ?? '').trim(),
+    String(transport.vehicleImageBack ?? '').trim(),
+  ].filter(Boolean);
+  const seatCount = defaultSeatCountForType(type);
+
+  const payload = {
+    name,
+    type,
+    brand: vehicleModel,
+    vehicleModel,
+    year,
+    registrationNumber,
+    seatCount,
+    amenities: [] as string[],
+    images,
+  };
+
+  const profile = refresh ? await ProviderProfile.findById(providerId).session(session ?? null) : null;
+  const primary = profile?.onboarding?.vehicleId
+    ? await Vehicle.findOne({ _id: profile.onboarding.vehicleId, providerId }).session(session ?? null) : null;
+  // One vehicle per driver: a changed registration number updates that vehicle, never adds a second.
+  const existing =
+    primary ??
+    (await Vehicle.findOne({ providerId, registrationNumber }).session(session ?? null)) ??
+    (await Vehicle.findOne({ providerId, status: { $ne: 'rejected' } })
+      .sort({ createdAt: 1 })
+      .session(session ?? null));
+  if (existing) {
+    // Listing vehicles must never overwrite an edited vehicle or undo moderation.
+    if (!refresh) return existing;
+    if (!existing.registrationCompletedAt) existing.name = payload.name;
+    existing.type = payload.type;
+    existing.brand = payload.brand;
+    existing.vehicleModel = payload.vehicleModel;
+    existing.year = payload.year;
+    existing.registrationNumber = payload.registrationNumber;
+    existing.set('verificationDetails', transport);
+    if (payload.images.length) existing.images = [...new Set([...payload.images, ...existing.images.slice(2)])];
+    await existing.save({ session });
+    return existing;
+  }
+
+  const [vehicle] = await Vehicle.create([{
+    ...payload,
+    verificationDetails: transport,
+    providerId,
+    status: 'pending',
+  }], { session });
+  return vehicle;
 }
 
 export async function listVehicles(providerId?: string, onlyActive = false) {
   const filter: Record<string, unknown> = providerId ? { providerId } : {};
   if (onlyActive) filter.status = 'active';
-  return Vehicle.find(filter).sort({ createdAt: -1 });
+  const query = Vehicle.find(filter).sort({ createdAt: -1 });
+  return providerId ? query.select('+verificationDetails') : query;
 }
 
 export async function listActiveVehiclesForProvider(providerId: string) {
   return Vehicle.find({ providerId, status: 'active' }).sort({ createdAt: -1 });
 }
 
-export async function getVehicle(id: string) {
-  return assertFound(await Vehicle.findById(id), 'Vehicle not found');
+export async function getVehicle(id: string, ownerId?: string, admin = false) {
+  const vehicle = assertFound(await Vehicle.findById(id), 'Vehicle not found');
+  return admin || (ownerId && vehicle.providerId.toString() === ownerId)
+    ? Vehicle.findById(id).select('+verificationDetails') : vehicle;
 }
 
 /**
@@ -88,20 +241,28 @@ const VEHICLE_PROVIDER_FIELDS = [
   'seatConfiguration',
   'amenities',
   'images',
+  'verificationDetails',
 ] as const;
 
 export async function updateVehicle(providerId: string, id: string, patch: Record<string, unknown>) {
-  const vehicle = assertFound(await Vehicle.findById(id), 'Vehicle not found');
+  const vehicle = assertFound(await Vehicle.findById(id).select('+verificationDetails'), 'Vehicle not found');
   if (vehicle.providerId.toString() !== providerId) {
     throw new AppError('You cannot modify this vehicle', 403);
   }
 
   const update: Record<string, unknown> = {};
+  if (patch.verificationDetails) {
+    const errors = transportErrors(patch.verificationDetails as Record<string, unknown>);
+    if (errors.length) throw new AppError(errors.join('\n'), 422);
+  }
   for (const field of VEHICLE_PROVIDER_FIELDS) {
     if (patch[field] !== undefined) update[field] = patch[field];
   }
   if (update.seatCount == null && patch.totalSeats != null) {
     update.seatCount = patch.totalSeats;
+  }
+  if (update.type != null) {
+    update.type = normalizeVehicleType(update.type);
   }
 
   if (typeof update.seatCount === 'number') {
@@ -119,7 +280,20 @@ export async function updateVehicle(providerId: string, id: string, patch: Recor
   }
 
   Object.assign(vehicle, update);
+  const registrationErrors = vehicleRegistrationErrors(vehicle);
+  if (patch.verificationDetails && registrationErrors.length) throw new AppError(registrationErrors.join('\n'), 422);
+  vehicle.registrationCompletedAt = registrationErrors.length ? undefined : new Date();
   await vehicle.save();
+  const profile = await ProviderProfile.findById(providerId);
+  if (profile?.onboarding?.vehicleId?.toString() === id && vehicle.verificationDetails) {
+    for (const key of ['vehicleClass', 'ownerName', 'vehicleModel', 'vehicleMakeYear', 'engineNumber',
+      'registrationNumber', 'driverName', 'driverPhone', 'driverEmail', 'driverPermanentAddress',
+      'driverCnic', 'hasInsurance', 'insuranceCompany', 'insuranceNumber', 'insuranceYear',
+      'driverExperienceYears', 'driverLicenseNumber', 'vehicleImageFront', 'vehicleImageBack', 'driverPhoto', 'driverEmergencyContact']) {
+      profile.set(`transportDetails.${key}`, vehicle.verificationDetails[key]);
+    }
+    await profile.save();
+  }
   return vehicle;
 }
 

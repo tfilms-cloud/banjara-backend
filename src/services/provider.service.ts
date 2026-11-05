@@ -1,10 +1,24 @@
-import { ProviderProfile } from '../models/ProviderProfile';
+import { ProviderProfile, type IStructuredAddress } from '../models/ProviderProfile';
 import { Booking } from '../models/Booking';
 import { Trip } from '../models/Trip';
 import { Room } from '../models/Room';
+import { Vehicle } from '../models/Vehicle';
 import { AppError, assertFound } from '../utils/AppError';
 import type { ProviderService, ProviderType, VerificationStatus } from '../types/provider.types';
 import * as bookingService from './booking.service';
+import { publicGuideDetails } from './guide.service';
+
+function uniqueUrls(values: Array<string | undefined | null>) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const next = String(value ?? '').trim();
+    if (!next || seen.has(next)) continue;
+    seen.add(next);
+    result.push(next);
+  }
+  return result;
+}
 
 export async function registerProvider(
   userId: string,
@@ -20,12 +34,15 @@ export async function registerProvider(
     socialMedia?: string;
     address: string;
     city: string;
+    structuredAddress?: IStructuredAddress;
     latitude?: number;
     longitude?: number;
     yearsExperience?: number;
     transportDetails?: Record<string, unknown>;
     hotelDetails?: Record<string, unknown>;
     tourDetails?: Record<string, unknown>;
+    restaurantDetails?: Record<string, unknown>;
+    guideDetails?: Record<string, unknown>;
   }
 ) {
   const existing = await ProviderProfile.findOne({ userId });
@@ -54,6 +71,7 @@ export async function registerProvider(
     locationUpdatedAt:
       input.latitude != null && input.longitude != null ? new Date() : undefined,
     structuredAddress: {
+      ...input.structuredAddress,
       city: input.city,
       formattedAddress: input.address,
       country: 'Pakistan',
@@ -63,6 +81,8 @@ export async function registerProvider(
     transportDetails: input.transportDetails,
     hotelDetails: input.hotelDetails,
     tourDetails: input.tourDetails,
+    restaurantDetails: input.restaurantDetails,
+    guideDetails: input.guideDetails,
   });
 
   return profile;
@@ -92,17 +112,31 @@ export async function updateMyProvider(userId: string, patch: Record<string, unk
     hotelDetails,
     transportDetails,
     tourDetails,
+    restaurantDetails,
+    guideDetails,
+    structuredAddress,
     ...rest
   } = patch;
 
   if (hotelDetails && typeof hotelDetails === 'object') {
     profile.set('hotelDetails', hotelDetails);
+    profile.markModified('hotelDetails');
   }
   if (transportDetails && typeof transportDetails === 'object') {
     profile.set('transportDetails', transportDetails);
+    profile.markModified('transportDetails');
   }
   if (tourDetails && typeof tourDetails === 'object') {
     profile.set('tourDetails', tourDetails);
+    profile.markModified('tourDetails');
+  }
+  if (restaurantDetails && typeof restaurantDetails === 'object') {
+    profile.set('restaurantDetails', restaurantDetails);
+    profile.markModified('restaurantDetails');
+  }
+  if (guideDetails && typeof guideDetails === 'object') {
+    profile.set('guideDetails', guideDetails);
+    profile.markModified('guideDetails');
   }
 
   if (Array.isArray(services)) {
@@ -125,6 +159,14 @@ export async function updateMyProvider(userId: string, patch: Record<string, unk
   }
 
   Object.assign(profile, rest);
+  if (structuredAddress || typeof rest.address === 'string' || typeof rest.city === 'string') {
+    profile.structuredAddress = {
+      ...(structuredAddress as IStructuredAddress | undefined),
+      city: profile.city,
+      formattedAddress: profile.address,
+      country: (structuredAddress as IStructuredAddress | undefined)?.country || 'Pakistan',
+    };
+  }
 
   if (typeof latitude === 'number' && typeof longitude === 'number') {
     profile.location = {
@@ -164,6 +206,110 @@ export async function setVerificationStatus(providerId: string, status: Verifica
 
 export async function listProviders(filter: { verificationStatus?: string } = {}) {
   return ProviderProfile.find(filter as Record<string, unknown>).sort({ createdAt: -1 });
+}
+
+/** Public catalog for travelers — restaurants, guides, tours by service + city. */
+export async function searchProviderCatalog(query: {
+  service?: string;
+  city?: string;
+  limit?: number;
+}) {
+  const service = String(query.service || '').trim();
+  const city = String(query.city || '').trim();
+  const limit = Math.min(Math.max(Number(query.limit) || 40, 1), 100);
+
+  const filter: Record<string, unknown> = {
+    verificationStatus: { $in: ['approved', 'pending'] },
+  };
+  if (service) filter.services = service;
+  if (city) {
+    filter.$or = [
+      { city: new RegExp(city, 'i') },
+      { 'restaurantDetails.city': new RegExp(city, 'i') },
+      { 'tourDetails.destination': new RegExp(city, 'i') },
+      { address: new RegExp(city, 'i') },
+    ];
+  }
+
+  return ProviderProfile.find(filter).sort({ rating: -1, createdAt: -1 }).limit(limit);
+}
+
+/** Traveler-facing provider card — omit identity docs and private contact fields. */
+export async function getPublicProviderById(id: string) {
+  const profile = assertFound(await ProviderProfile.findById(id).lean(), 'Provider not found');
+  const vehicles = await Vehicle.find({
+    providerId: id,
+    status: { $nin: ['rejected', 'suspended'] },
+  })
+    .select('name type images seatCount brand vehicleModel registrationNumber')
+    .lean();
+
+  const transport = profile.transportDetails
+    ? {
+        businessName: profile.transportDetails.businessName,
+        vehicleTypes: profile.transportDetails.vehicleTypes,
+        vehicleCount: profile.transportDetails.vehicleCount,
+        ownershipType: profile.transportDetails.ownershipType,
+        operatingCities: profile.transportDetails.operatingCities,
+        operatingRoutes: profile.transportDetails.operatingRoutes,
+        pickupLocations: profile.transportDetails.pickupLocations,
+        dropoffLocations: profile.transportDetails.dropoffLocations,
+        description: profile.transportDetails.description,
+        pricingMethod: profile.transportDetails.pricingMethod,
+        priceAmount: profile.transportDetails.priceAmount,
+        pricePercent: profile.transportDetails.pricePercent,
+        vehicleClass: profile.transportDetails.vehicleClass,
+        ownerName: profile.transportDetails.ownerName,
+        vehicleModel: profile.transportDetails.vehicleModel,
+        vehicleMakeYear: profile.transportDetails.vehicleMakeYear,
+        registrationNumber: profile.transportDetails.registrationNumber,
+        driverName: profile.transportDetails.driverName,
+        hasInsurance: profile.transportDetails.hasInsurance,
+        insuranceCompany: profile.transportDetails.insuranceCompany,
+        driverExperienceYears: profile.transportDetails.driverExperienceYears,
+        vehicleImageFront: profile.transportDetails.vehicleImageFront,
+        vehicleImageBack: profile.transportDetails.vehicleImageBack,
+        driverPhoto: profile.transportDetails.driverPhoto,
+      }
+    : undefined;
+
+  const hotel = profile.hotelDetails as Record<string, unknown> | undefined;
+  const tour = profile.tourDetails as Record<string, unknown> | undefined;
+  const restaurant = profile.restaurantDetails as Record<string, unknown> | undefined;
+  const guideRaw = profile.guideDetails as Record<string, unknown> | undefined;
+  const guide = publicGuideDetails(guideRaw as never);
+
+  const galleryImages = uniqueUrls([
+    profile.logo,
+    guide?.profilePhoto as string | undefined,
+    ...((guide?.photos as Array<{ url?: string }> | undefined)?.map((p) => p.url) ?? []),
+    transport?.vehicleImageFront,
+    transport?.vehicleImageBack,
+    ...vehicles.flatMap((v) => (Array.isArray(v.images) ? v.images : [])),
+    ...((hotel?.outlookImages as string[]) ?? []),
+    ...((hotel?.roomImages as string[]) ?? []),
+    ...((hotel?.restaurantImages as string[]) ?? []),
+    ...((hotel?.images as string[]) ?? []),
+    ...((tour?.images as string[]) ?? []),
+    ...((restaurant?.images as string[]) ?? []),
+  ]);
+
+  return {
+    ...profile,
+    transportDetails: transport,
+    guideDetails: guide,
+    galleryImages,
+    fleetVehicles: vehicles.map((v) => ({
+      id: String(v._id),
+      name: v.name,
+      type: v.type,
+      images: Array.isArray(v.images) ? v.images : [],
+      registrationNumber: v.registrationNumber,
+    })),
+    documents: undefined,
+    cnicFront: undefined,
+    cnicBack: undefined,
+  };
 }
 
 export async function getProviderDashboard(providerId: string) {

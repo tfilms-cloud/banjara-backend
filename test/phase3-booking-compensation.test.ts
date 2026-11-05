@@ -61,7 +61,7 @@ describe('Phase 3.3 — booking compensation on mid-flow failure', () => {
 
     const res = await authed(app, customer.token).post('/api/bookings').send({
       bookingType: 'transport',
-      paymentMethod: 'card',
+      paymentMethod: 'cash',
       transportBooking: {
         tripId,
         seats: ['A1'],

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { newPasswordSchema } from './password';
 
 /**
  * Fields a user may change about themselves.
@@ -19,5 +20,5 @@ export const userUpdateSchema = z.object({
 
 export const passwordUpdateSchema = z.object({
   currentPassword: z.string().min(1),
-  newPassword: z.string().min(6).max(200),
+  newPassword: newPasswordSchema,
 });

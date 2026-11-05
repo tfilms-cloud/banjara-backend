@@ -1,12 +1,24 @@
 import { Router } from 'express';
 import * as adminController from '../controllers/admin.controller';
+import * as serviceCatalogController from '../controllers/serviceCatalog.controller';
 import { authenticate } from '../middleware/auth.middleware';
-import { requireRole } from '../middleware/role.middleware';
+import { requireAdminTwoFactor, requireRole } from '../middleware/role.middleware';
+import { auditAdminChanges, listAuditLogs } from '../services/audit.service';
+import { sendSuccess } from '../utils/apiResponse';
 import { validate } from '../middleware/validation.middleware';
 import { updateSupportSchema } from '../validators/support.validator';
+import { adminModerateItinerarySchema } from '../validators/tourItinerary.validator';
 
 const router = Router();
-router.use(authenticate, requireRole('admin'));
+router.use(authenticate, requireRole('admin'), requireAdminTwoFactor, auditAdminChanges);
+
+router.get('/audit-logs', async (req, res, next) => {
+  try {
+    return sendSuccess(res, await listAuditLogs(req.query as Record<string, unknown>));
+  } catch (error) {
+    next(error);
+  }
+});
 
 router.get('/dashboard', adminController.dashboard);
 
@@ -15,6 +27,12 @@ router.get('/providers/:id', adminController.getProvider);
 router.put('/providers/:id/approve', adminController.approveProvider);
 router.put('/providers/:id/reject', adminController.rejectProvider);
 router.put('/providers/:id/suspend', adminController.suspendProvider);
+router.put('/providers/:id/platform-fee', adminController.setProviderPlatformFee);
+
+router.get('/services', serviceCatalogController.listAdmin);
+router.post('/services', serviceCatalogController.create);
+router.put('/services/:id', serviceCatalogController.update);
+router.delete('/services/:id', serviceCatalogController.remove);
 
 router.get('/customers', adminController.listCustomers);
 router.get('/customers/:id', adminController.getCustomer);
@@ -66,5 +84,13 @@ router.get('/support/:id', adminController.getSupport);
 router.put('/support/:id', validate(updateSupportSchema), adminController.updateSupport);
 
 router.get('/reports', adminController.getReports);
+
+router.get('/tour-itineraries', adminController.listTourItineraries);
+router.get('/tour-itineraries/:id', adminController.getTourItinerary);
+router.put(
+  '/tour-itineraries/:id/moderate',
+  validate(adminModerateItinerarySchema),
+  adminController.moderateTourItinerary
+);
 
 export default router;

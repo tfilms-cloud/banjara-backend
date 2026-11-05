@@ -17,6 +17,7 @@ describe('Phase 5 — health vs readiness', () => {
   it('fails readiness with 503 when the database is disconnected', async () => {
     const res = await request(app).get('/api/ready');
     expect(res.status).toBe(503);
+    expect(res.headers['cache-control']).toBe('no-store');
     expect(res.body.data.database).toBe('disconnected');
   });
 });

@@ -300,6 +300,8 @@ async function searchNominatim(q: string, limit: number) {
   url.searchParams.set('addressdetails', '1');
   url.searchParams.set('limit', String(limit));
   url.searchParams.set('countrycodes', 'pk');
+  // English names where OpenStreetMap has them; otherwise the local name.
+  url.searchParams.set('accept-language', 'en');
 
   const response = await fetch(url.toString(), {
     headers: {
@@ -326,6 +328,7 @@ export async function reverseGeocode(latitude: number, longitude: number) {
   url.searchParams.set('lon', String(longitude));
   url.searchParams.set('format', 'json');
   url.searchParams.set('addressdetails', '1');
+  url.searchParams.set('accept-language', 'en');
 
   const response = await fetch(url.toString(), {
     headers: {

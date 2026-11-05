@@ -1,6 +1,7 @@
 import { paramId } from '../utils/params';
 import { NextFunction, Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.middleware';
+import { ProviderProfile } from '../models/ProviderProfile';
 import * as vehicleService from '../services/vehicle.service';
 import { sendSuccess } from '../utils/apiResponse';
 import { AppError } from '../utils/AppError';
@@ -20,8 +21,23 @@ export async function create(req: AuthRequest, res: Response, next: NextFunction
 
 export async function list(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const id = req.user?.role === 'provider' ? providerId(req) : undefined;
-    return sendSuccess(res, await vehicleService.listVehicles(id));
+    if (req.user?.role === 'provider') {
+      const id = providerId(req);
+      // Heal: signup used to only save transportDetails — ensure a Vehicle row exists
+      try {
+        const profile = await ProviderProfile.findById(id).select('services transportDetails');
+        if (profile && (profile.services ?? []).includes('transport')) {
+          await vehicleService.upsertVehicleFromTransportDetails(
+            id,
+            profile.transportDetails as Record<string, unknown> | undefined
+          );
+        }
+      } catch {
+        // non-fatal — still return whatever vehicles exist
+      }
+      return sendSuccess(res, await vehicleService.listVehicles(id));
+    }
+    return sendSuccess(res, await vehicleService.listVehicles());
   } catch (error) {
     next(error);
   }
@@ -29,7 +45,7 @@ export async function list(req: AuthRequest, res: Response, next: NextFunction) 
 
 export async function getById(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    return sendSuccess(res, await vehicleService.getVehicle(paramId(req.params.id)));
+    return sendSuccess(res, await vehicleService.getVehicle(paramId(req.params.id), req.user?.providerId, req.user?.role === 'admin'));
   } catch (error) {
     next(error);
   }

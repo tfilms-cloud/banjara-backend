@@ -162,16 +162,31 @@ export async function upsertHotelFromProviderProfile(
     hotelType = 'hotel';
   }
 
+  const gallery = [
+    ...stringList(details.outlookImages),
+    ...stringList(details.roomImages),
+    ...stringList(details.restaurantImages),
+    ...stringList(details.images),
+  ].filter((url, index, arr) => url && arr.indexOf(url) === index);
+
+  const derivedAmenities = stringList(details.amenities);
+  if (String(details.restaurantAvailable ?? '').toLowerCase() === 'yes' && !derivedAmenities.includes('Restaurant')) {
+    derivedAmenities.push('Restaurant');
+  }
+
   const payload = {
     name,
-    description: String(details.description ?? profile.description ?? ''),
+    description:
+      String(details.description ?? '').trim() ||
+      String(profile.description ?? '').trim() ||
+      `${name} in ${city}`,
     hotelType,
     address,
     city,
     phone: String(details.phone ?? profile.phone ?? ''),
     email: String(details.email ?? profile.email ?? ''),
-    amenities: stringList(details.amenities),
-    images: stringList(details.images),
+    amenities: derivedAmenities,
+    images: gallery,
     checkInTime: String(details.checkInTime ?? '14:00'),
     checkOutTime: String(details.checkOutTime ?? '12:00'),
     location: {
@@ -323,7 +338,62 @@ export async function listHotels(providerId?: string) {
 }
 
 export async function getHotel(id: string) {
-  return assertFound(await Hotel.findById(id).populate('providerId'), 'Hotel not found');
+  const hotel = assertFound(
+    await Hotel.findById(id).populate(
+      'providerId',
+      'businessName ownerName phone email description hotelDetails verificationStatus yearsExperience'
+    ),
+    'Hotel not found'
+  );
+
+  const provider =
+    hotel.providerId && typeof hotel.providerId === 'object'
+      ? (hotel.providerId as {
+          _id?: { toString(): string };
+          businessName?: string;
+          ownerName?: string;
+          phone?: string;
+          email?: string;
+          description?: string;
+          yearsExperience?: number;
+          hotelDetails?: Record<string, unknown>;
+          verificationStatus?: string;
+          toString?: () => string;
+        })
+      : null;
+  const details = (provider?.hotelDetails ?? {}) as Record<string, unknown>;
+
+  const derivedAmenities = new Set(
+    (hotel.amenities ?? []).map(String).filter(Boolean)
+  );
+  if (String(details.restaurantAvailable ?? '').toLowerCase() === 'yes') {
+    derivedAmenities.add('Restaurant');
+  }
+
+  const description =
+    String(hotel.description || '').trim() ||
+    String(details.description ?? '').trim() ||
+    String(provider?.description ?? '').trim() ||
+    '';
+
+  return {
+    ...hotel.toObject(),
+    providerId: provider?._id?.toString?.() ?? hotel.providerId?.toString?.(),
+    description,
+    amenities: Array.from(derivedAmenities),
+    managerName: String(details.managerName ?? provider?.ownerName ?? '').trim() || undefined,
+    village: String(details.village ?? '').trim() || undefined,
+    district: String(details.district ?? '').trim() || undefined,
+    landline: String(details.landline ?? '').trim() || undefined,
+    yearsExperience:
+      Number(details.yearsExperience ?? provider?.yearsExperience ?? 0) || undefined,
+    restaurantAvailable: String(details.restaurantAvailable ?? '').toLowerCase() === 'yes',
+    googleMapsUrl: String(details.googleMapsUrl ?? '').trim() || undefined,
+    website: String(details.website ?? '').trim() || undefined,
+    businessRegistered: String(details.businessRegistered ?? '').toLowerCase() === 'yes',
+    phone: hotel.phone || String(details.phone ?? provider?.phone ?? ''),
+    email: hotel.email || String(details.email ?? provider?.email ?? ''),
+  };
 }
 
 /**
@@ -726,12 +796,13 @@ export async function reserveRoomsForRange(
 }
 
 /** Release a specific list of nights. Only nights with at least `roomsCount` booked are touched. */
-export async function releaseSpecificDates(roomId: string, dates: string[], roomsCount: number) {
-  const room = assertFound(await Room.findById(roomId), 'Room not found');
+export async function releaseSpecificDates(roomId: string, dates: string[], roomsCount: number, session?: import('mongoose').ClientSession) {
+  const room = assertFound(await Room.findById(roomId).session(session ?? null), 'Room not found');
   for (const date of dates) {
     await RoomAvailability.findOneAndUpdate(
       { roomId, date, bookedRooms: { $gte: roomsCount } },
-      { $inc: { bookedRooms: -roomsCount, availableRooms: roomsCount } }
+      { $inc: { bookedRooms: -roomsCount, availableRooms: roomsCount } },
+      { session }
     );
   }
   return { room, dates };
@@ -741,10 +812,11 @@ export async function releaseRoomsForRange(
   roomId: string,
   checkIn: string,
   checkOut: string,
-  roomsCount: number
+  roomsCount: number,
+  session?: import('mongoose').ClientSession
 ) {
   const dates = datesBetween(checkIn, checkOut);
-  return releaseSpecificDates(roomId, dates, roomsCount);
+  return releaseSpecificDates(roomId, dates, roomsCount, session);
 }
 
 export async function calculateHotelSubtotal(

@@ -3,6 +3,8 @@ import type { AuthRequest } from '../middleware/auth.middleware';
 import { assertImageUpload } from '../middleware/upload.middleware';
 import { AppError } from '../utils/AppError';
 import { sendSuccess } from '../utils/apiResponse';
+import { uploadPaymentImage } from '../services/paymentFiles.service';
+import { requestMediaDeletion } from '../services/mediaDeletion.service';
 import {
   isSupabaseConfigured,
   uploadImageBuffer,
@@ -21,6 +23,17 @@ function parseFolder(raw: unknown): UploadFolder {
   return folder as UploadFolder;
 }
 
+export async function removeImage(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const reference = req.body?.reference;
+    if (typeof reference !== 'string' || !reference.length || reference.length > 4096) {
+      throw new AppError('A valid photo reference is required.', 422);
+    }
+    const result = await requestMediaDeletion(reference, req.user!.id);
+    return sendSuccess(res, result, result.status === 'deleted' ? 'Photo deleted' : 'Photo removal queued');
+  } catch (error) { next(error); }
+}
+
 export async function uploadSingle(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     if (!isSupabaseConfigured()) {
@@ -28,6 +41,9 @@ export async function uploadSingle(req: AuthRequest, res: Response, next: NextFu
     }
     const file = assertImageUpload(req.file);
     const folder = parseFolder(req.body?.folder);
+    if (folder === 'payments') {
+      return sendSuccess(res, await uploadPaymentImage(file.buffer, req.user!.id), 'Receipt uploaded privately', 201);
+    }
     const result = await uploadImageBuffer({
       buffer: file.buffer,
       mime: file.mimetype,
@@ -53,6 +69,10 @@ export async function uploadMultiple(req: AuthRequest, res: Response, next: Next
     const folder = parseFolder(req.body?.folder);
     const items = [];
     for (const file of files) {
+      if (folder === 'payments') {
+        items.push(await uploadPaymentImage(file.buffer, req.user!.id));
+        continue;
+      }
       items.push(
         await uploadImageBuffer({
           buffer: file.buffer,

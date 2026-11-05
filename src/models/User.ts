@@ -12,6 +12,21 @@ export interface IUser {
   avatar?: string;
   refreshTokenHash?: string;
   preferences?: Record<string, unknown>;
+  /** Wrong passwords / 2-step codes in a row; reaching the limit sets `lockedUntil`. */
+  failedLoginAttempts?: number;
+  lockedUntil?: Date;
+  twoFactor?: {
+    enabled: boolean;
+    /** Sealed (AES-GCM) base32 TOTP secret. */
+    secret?: string;
+    /** Secret being set up, until the first code confirms it. */
+    pendingSecret?: string;
+    /** SHA-256 of unused one-time recovery codes. */
+    recoveryCodes?: string[];
+    /** Last accepted TOTP step, so a code cannot be used twice. */
+    lastUsedStep?: number;
+    enabledAt?: Date;
+  };
   createdAt: Date;
   updatedAt: Date;
   toSafeJSON(): Record<string, unknown>;
@@ -28,6 +43,16 @@ const userSchema = new Schema<IUser>(
     avatar: String,
     refreshTokenHash: { type: String, select: false },
     preferences: { type: Schema.Types.Mixed, default: {} },
+    failedLoginAttempts: { type: Number, default: 0, select: false },
+    lockedUntil: { type: Date, select: false },
+    twoFactor: {
+      enabled: { type: Boolean, default: false },
+      secret: { type: String, select: false },
+      pendingSecret: { type: String, select: false },
+      recoveryCodes: { type: [String], select: false, default: undefined },
+      lastUsedStep: { type: Number, select: false },
+      enabledAt: Date,
+    },
   },
   { timestamps: true }
 );

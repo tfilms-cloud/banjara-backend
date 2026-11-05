@@ -2,6 +2,7 @@ import http from 'http';
 import { createApp } from './app';
 import { connectDatabase, disconnectDatabase } from './config/database';
 import { env } from './config/env';
+import { startJobs, stopJobs } from './jobs/scheduler';
 import { logger } from './utils/logger';
 import { initSocket } from './sockets/socket';
 
@@ -17,6 +18,7 @@ async function bootstrap() {
   server.listen(env.PORT, '0.0.0.0', () => {
     logger.info(`Banjara API listening on http://localhost:${env.PORT}`);
     logger.info(`Environment: ${env.NODE_ENV}`);
+    startJobs();
   });
 
   let shuttingDown = false;
@@ -24,6 +26,7 @@ async function bootstrap() {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info(`${signal} received. Shutting down...`);
+    stopJobs();
 
     // A hung connection must not block a deploy forever.
     const forceExit = setTimeout(() => {

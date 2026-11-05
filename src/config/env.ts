@@ -14,15 +14,50 @@ const envSchema = z.object({
   CLIENT_URL: z.string().default('http://localhost:8081'),
   /** Comma-separated extra CORS origins for Expo web/dev clients */
   CLIENT_ORIGINS: z.string().optional().default(''),
+  /**
+   * Website refresh-token cookie. `lax` works when the website and API share a site
+   * (localhost:3000 + localhost:5000, or banjara.app + api.banjara.app). Use `none`
+   * (requires COOKIE_SECURE=true) only if they live on unrelated domains.
+   */
+  COOKIE_SAMESITE: z.enum(['lax', 'strict', 'none']).default('lax'),
+  COOKIE_SECURE: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined ? process.env.NODE_ENV === 'production' : v === 'true' || v === '1')),
+  COOKIE_DOMAIN: z.string().optional().default(''),
+  /** Encrypts admins' 2-step verification secrets at rest. Falls back to a key derived from JWT_REFRESH_SECRET. */
+  MFA_ENCRYPTION_KEY: z.string().optional().default(''),
+  /**
+   * Admins must turn on 2-step verification before using the admin API.
+   * Defaults to on in production, off elsewhere.
+   */
+  ADMIN_REQUIRE_2FA: z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined ? process.env.NODE_ENV === 'production' : v === 'true' || v === '1')),
   SUPABASE_URL: z.string().optional().default(''),
   SUPABASE_SERVICE_ROLE_KEY: z.string().optional().default(''),
   SUPABASE_STORAGE_BUCKET: z.string().optional().default('Banjara Images'),
+  SUPABASE_PAYMENT_BUCKET: z.string().default('banjara-payments-private'),
   PAYMENT_SECRET: z.string().default('mock_payment_secret'),
   EXPO_NOTIFICATION_KEY: z.string().optional().default(''),
-  PLATFORM_FEE_RATE: z.coerce.number().default(0.05),
+  PLATFORM_FEE_RATE: z.coerce.number().default(0.002),
   TAX_RATE: z.coerce.number().default(0.1),
   SERVICE_FEE: z.coerce.number().default(200),
   GEOCODER_USER_AGENT: z.string().optional().default('BanjaraApp/1.0 (support@banjara.app)'),
+  /** auto | tesseract | http — OCR secrets never belong in the Expo app */
+  OCR_PROVIDER: z.enum(['auto', 'tesseract', 'http', 'mock']).optional().default('auto'),
+  OCR_API_KEY: z.string().optional().default(''),
+  OCR_API_URL: z.string().optional().default('https://api.ocr.space/parse/image'),
+  /** Background jobs (payment expiry + booking reminders). Skip in test. */
+  JOBS_ENABLED: z
+    .string()
+    .optional()
+    .default('true')
+    .transform((v) => v !== 'false' && v !== '0'),
+  JOBS_INTERVAL_MS: z.coerce.number().default(60_000),
+  /** Minutes a booking stays pending before the provider gets a reminder. */
+  PENDING_BOOKING_REMINDER_MINUTES: z.coerce.number().default(10),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -122,13 +157,25 @@ export const env = parsed.success
       JWT_REFRESH_EXPIRES_IN: '7d',
       CLIENT_URL: 'http://localhost:8081',
       CLIENT_ORIGINS: '',
+      COOKIE_SAMESITE: 'lax',
+      COOKIE_SECURE: false,
+      COOKIE_DOMAIN: '',
+      MFA_ENCRYPTION_KEY: '',
+      ADMIN_REQUIRE_2FA: false,
       SUPABASE_URL: process.env.SUPABASE_URL ?? '',
       SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
       SUPABASE_STORAGE_BUCKET: process.env.SUPABASE_STORAGE_BUCKET ?? 'Banjara Images',
+      SUPABASE_PAYMENT_BUCKET: process.env.SUPABASE_PAYMENT_BUCKET ?? 'banjara-payments-private',
       PAYMENT_SECRET: 'mock_payment_secret',
       EXPO_NOTIFICATION_KEY: '',
-      PLATFORM_FEE_RATE: 0.05,
+      PLATFORM_FEE_RATE: 0.002,
       TAX_RATE: 0.1,
       SERVICE_FEE: 200,
       GEOCODER_USER_AGENT: 'BanjaraApp/1.0 (support@banjara.app)',
+      OCR_PROVIDER: 'auto',
+      OCR_API_KEY: process.env.OCR_API_KEY ?? '',
+      OCR_API_URL: process.env.OCR_API_URL ?? 'https://api.ocr.space/parse/image',
+      JOBS_ENABLED: true,
+      JOBS_INTERVAL_MS: 60_000,
+      PENDING_BOOKING_REMINDER_MINUTES: 10,
     } as z.infer<typeof envSchema>);

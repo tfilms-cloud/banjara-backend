@@ -7,6 +7,7 @@ import { Booking } from '../models/Booking';
 import { Review } from '../models/Review';
 import * as adminService from '../services/admin.service';
 import * as vehicleService from '../services/vehicle.service';
+import * as tourItineraryService from '../services/tourItinerary.service';
 import { assertFound } from '../utils/AppError';
 import { sendSuccess } from '../utils/apiResponse';
 
@@ -44,7 +45,7 @@ export async function approveProvider(req: AuthRequest, res: Response, next: Nex
   try {
     return sendSuccess(
       res,
-      await adminService.setProviderStatus(paramId(req.params.id), 'approved'),
+      await adminService.setProviderStatus(paramId(req.params.id), 'approved', undefined, req.user!.id),
       'Provider approved'
     );
   } catch (error) {
@@ -72,6 +73,19 @@ export async function suspendProvider(req: AuthRequest, res: Response, next: Nex
       res,
       await adminService.setProviderStatus(paramId(req.params.id), 'suspended', reason),
       'Provider suspended'
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function setProviderPlatformFee(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const percent = Number(req.body?.platformFeePercent);
+    return sendSuccess(
+      res,
+      await adminService.setProviderPlatformFee(paramId(req.params.id), percent),
+      'Provider commission updated'
     );
   } catch (error) {
     next(error);
@@ -322,9 +336,9 @@ export async function getBooking(req: AuthRequest, res: Response, next: NextFunc
   }
 }
 
-export async function listPayments(_req: AuthRequest, res: Response, next: NextFunction) {
+export async function listPayments(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    return sendSuccess(res, await adminService.listPayments());
+    return sendSuccess(res, await adminService.listPayments(req.query as Record<string, unknown>));
   } catch (error) {
     next(error);
   }
@@ -397,6 +411,42 @@ export async function getReports(req: AuthRequest, res: Response, next: NextFunc
   try {
     const range = typeof req.query.range === 'string' ? req.query.range : '7d';
     return sendSuccess(res, await adminService.getReports(range));
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listTourItineraries(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    return sendSuccess(
+      res,
+      await tourItineraryService.listAdminItineraries(req.query as Record<string, unknown>)
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getTourItinerary(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    return sendSuccess(
+      res,
+      await tourItineraryService.getItinerary(paramId(req.params.id), { admin: true })
+    );
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function moderateTourItinerary(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const action = req.body?.action as 'approve' | 'reject' | 'feature' | 'unfeature' | 'unpublish';
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
+    return sendSuccess(
+      res,
+      await tourItineraryService.moderateItinerary(paramId(req.params.id), action, reason),
+      'Itinerary updated'
+    );
   } catch (error) {
     next(error);
   }

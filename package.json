@@ -4,10 +4,17 @@
   "description": "Banjara travel marketplace API — Node.js, Express, MongoDB",
   "main": "dist/server.js",
   "scripts": {
+    "db:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local-mongodb.ps1",
+    "dev:local": "npm run dev",
+    "check:runtime": "tsx scripts/check-runtime.ts",
+    "migrate:payment-files": "tsx scripts/migrate-private-payment-files.ts",
+    "predev": "node scripts/ensure-local-mongodb.cjs",
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "seed:dev": "tsx src/seed/seed.ts",
+    "seed:demo": "tsx src/seed/demo.ts",
+    "verify:demo": "tsx scripts/verify-demo-catalog.ts",
     "bootstrap": "tsx src/seed/bootstrap.ts",
     "clear": "tsx src/seed/clear.ts",
     "typecheck": "tsc --noEmit",
@@ -40,7 +47,9 @@
     "mongoose": "^9.9.5",
     "multer": "^2.3.0",
     "pino": "^10.3.1",
+    "sharp": "^0.35.5",
     "socket.io": "^4.8.3",
+    "tesseract.js": "^7.0.0",
     "zod": "^4.5.4"
   },
   "devDependencies": {

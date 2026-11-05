@@ -3,7 +3,7 @@ import * as vehicleController from '../controllers/vehicle.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { requireRole } from '../middleware/role.middleware';
 import { validate } from '../middleware/validation.middleware';
-import { createVehicleSchema } from '../validators/vehicle.validator';
+import { createVehicleSchema, updateVehicleSchema } from '../validators/vehicle.validator';
 
 const router = Router();
 
@@ -16,7 +16,7 @@ router.post(
   validate(createVehicleSchema),
   vehicleController.create
 );
-router.put('/:id', authenticate, requireRole('provider'), vehicleController.update);
+router.put('/:id', authenticate, requireRole('provider'), validate(updateVehicleSchema), vehicleController.update);
 router.delete('/:id', authenticate, requireRole('provider'), vehicleController.remove);
 
 export default router;

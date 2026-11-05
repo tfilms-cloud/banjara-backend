@@ -17,6 +17,7 @@ export const createTripSchema = z.object({
   journeyType: z.enum(['one_way', 'round_trip']).optional().default('one_way'),
   returnDate: z.string().optional(),
   returnTime: z.string().optional(),
+  bookingMode: z.enum(['seat', 'vehicle']).optional().default('seat'),
 });
 
 /**
@@ -39,6 +40,7 @@ export const updateTripSchema = z.object({
   journeyType: z.enum(['one_way', 'round_trip']).optional(),
   returnDate: z.string().optional(),
   returnTime: z.string().optional(),
+  bookingMode: z.enum(['seat', 'vehicle']).optional(),
 });
 
 export const searchTripSchema = z.object({
@@ -53,5 +55,6 @@ export const searchTripSchema = z.object({
   maxPrice: z.coerce.number().optional(),
   vehicleType: z.string().optional(),
   journeyType: z.enum(['one_way', 'round_trip']).optional(),
+  bookingMode: z.enum(['seat', 'vehicle']).optional(),
   providerId: z.string().optional(),
 });

@@ -7,7 +7,7 @@ import { clearDatabase, setupTestDb, teardownTestDb } from './helpers/db';
 import { authed, makeUser } from './helpers/auth';
 import { isReplicaSetHello, supportsTransactions } from '../src/config/database';
 
-async function makePaidTransportBooking(app: ReturnType<typeof createApp>) {
+async function makeUnpaidTransportBooking(app: ReturnType<typeof createApp>) {
   const customer = await makeUser(app, 'customer');
   const provider = await makeUser(app, 'provider', { service: 'transport' });
   const vehicle = await Vehicle.create({
@@ -33,7 +33,7 @@ async function makePaidTransportBooking(app: ReturnType<typeof createApp>) {
 
   const bookingRes = await authed(app, customer.token).post('/api/bookings').send({
     bookingType: 'transport',
-    paymentMethod: 'card',
+    paymentMethod: 'cash',
     transportBooking: {
       tripId,
       seats: ['A1'],
@@ -60,7 +60,7 @@ describe('Phase 3.3 — booking flow consistency / idempotency', () => {
   });
 
   it('is idempotent when a cancellation is retried concurrently', async () => {
-    const { customer, tripId, bookingId } = await makePaidTransportBooking(app);
+    const { customer, tripId, bookingId } = await makeUnpaidTransportBooking(app);
 
     const attempts = Array.from({ length: 8 }, () =>
       authed(app, customer.token).put(`/api/bookings/${bookingId}/cancel`)
@@ -75,7 +75,7 @@ describe('Phase 3.3 — booking flow consistency / idempotency', () => {
     expect(trip!.bookedSeats).toBe(0);
 
     const payment = await Payment.findOne({ bookingId });
-    expect(payment?.status).toBe('refunded');
+    expect(payment?.status).toBe('failed'); // An unpaid cash attempt needs no refund.
   });
 
   it('detects a replica set from the hello response', () => {

@@ -9,10 +9,12 @@ export interface ISeatConfiguration {
 }
 
 export interface IVehicle {
+  verificationDetails?: Record<string, unknown>;
+  registrationCompletedAt?: Date;
   _id: Types.ObjectId;
   providerId: Types.ObjectId;
   name: string;
-  type: 'van' | 'bus' | 'car' | 'minibus' | 'tourVehicle' | 'coaster' | 'suv' | 'other';
+  type: 'van' | 'bus' | 'car' | 'minibus' | 'tourVehicle' | 'coaster' | 'suv' | 'jeep' | 'other';
   brand: string;
   vehicleModel: string;
   year: number;
@@ -45,11 +47,14 @@ const seatConfigurationSchema = new Schema<ISeatConfiguration>(
 
 const vehicleSchema = new Schema<IVehicle>(
   {
+    // Driver/insurance information is only returned to the owner and administrators.
+    verificationDetails: { type: Schema.Types.Mixed, select: false },
+    registrationCompletedAt: Date,
     providerId: { type: Schema.Types.ObjectId, ref: 'ProviderProfile', required: true, index: true },
     name: { type: String, required: true },
     type: {
       type: String,
-      enum: ['van', 'bus', 'car', 'minibus', 'tourVehicle', 'coaster', 'suv', 'other'],
+      enum: ['van', 'bus', 'car', 'minibus', 'tourVehicle', 'coaster', 'suv', 'jeep', 'other'],
       required: true,
     },
     brand: { type: String, required: true },
