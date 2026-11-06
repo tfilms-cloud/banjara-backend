@@ -1,4 +1,4 @@
-import mongoose, { type ClientSession } from 'mongoose';
+import mongoose, { type ClientSession, type HydratedDocument } from 'mongoose';
 import {
   ProviderProfile,
   type IProviderProfile,
@@ -6,6 +6,13 @@ import {
 import { Vehicle } from '../models/Vehicle';
 import { AppError, assertFound } from '../utils/AppError';
 import { upsertVehicleFromTransportDetails } from './vehicle.service';
+import {
+  LODGING_STEPS,
+  businessValid as lodgingBusinessValid,
+  lodgingProgress,
+  photoErrors,
+  propertyErrors,
+} from './lodgingOnboarding.service';
 
 export type TransportStep =
   | 'business'
@@ -127,8 +134,45 @@ export async function providerWithProgress(
   const document = profile as IProviderProfile & { toObject?: () => object };
   return {
     ...(document.toObject ? document.toObject() : profile),
-    onboardingProgress: await transportProgress(profile, session),
+    onboardingProgress:
+      (await transportProgress(profile, session)) ?? (await lodgingProgress(profile, session)),
   };
+}
+
+/** Lodging checkpoints: each one checks its step's data before marking it done. */
+async function lodgingCheckpoint(profile: HydratedDocument<IProviderProfile>, step: string, session: ClientSession) {
+  const progress = (await lodgingProgress(profile, session))!;
+  const order = [...LODGING_STEPS, 'submitted'];
+  if (!order.includes(step)) throw new AppError('Invalid onboarding checkpoint', 422);
+  if (order.indexOf(step) > order.indexOf(progress.nextStep))
+    throw new AppError(`Complete the ${progress.nextStep} step first.`, 422);
+  const details = profile.hotelDetails as Record<string, unknown> | undefined;
+  if (step === 'location') {
+    if (!lodgingBusinessValid(profile) || !locationValid(profile))
+      throw new AppError('Complete your details and confirm a valid map pin.', 422);
+    profile.set('onboarding.locationConfirmed', true);
+  } else if (step === 'property') {
+    const errors = propertyErrors(details);
+    if (errors.length) throw new AppError(errors.join('\n'), 422);
+    profile.set('onboarding.propertyConfirmed', true);
+  } else if (step === 'photos') {
+    const errors = photoErrors(details);
+    if (errors.length) throw new AppError(errors.join('\n'), 422);
+    profile.set('onboarding.photosConfirmed', true);
+  } else {
+    throw new AppError('Invalid onboarding checkpoint', 422);
+  }
+  // Any change after submitting sends the application back for review.
+  profile.set('onboarding.submittedAt', undefined);
+}
+
+async function submitLodgingApplication(profile: HydratedDocument<IProviderProfile>) {
+  const progress = await lodgingProgress(profile);
+  if (!progress || !['review', 'submitted'].includes(progress.nextStep))
+    throw new AppError(`Complete the ${progress?.nextStep ?? 'lodging'} step before submitting.`, 422);
+  if (!profile.onboarding?.submittedAt) profile.set('onboarding.submittedAt', new Date());
+  await profile.save();
+  return providerWithProgress(profile);
 }
 
 export async function checkpoint(
@@ -141,6 +185,11 @@ export async function checkpoint(
       await ProviderProfile.findOne({ userId }).session(session),
       'Provider profile not found',
     );
+    if (profile.services.includes('hotel')) {
+      await lodgingCheckpoint(profile, step, session);
+      await profile.save({ session });
+      return providerWithProgress(profile, session);
+    }
     if (!profile.services.includes('transport'))
       throw new AppError('Transportation onboarding required', 422);
     const progress = (await transportProgress(profile, session))!;
@@ -215,6 +264,8 @@ export async function checkpoint(
 }
 
 export async function submitTransportApplication(userId: string) {
+  const lodging = await ProviderProfile.findOne({ userId, services: 'hotel' });
+  if (lodging) return submitLodgingApplication(lodging);
   return mongoose.connection.transaction(async (session) => {
     const profile = assertFound(
       await ProviderProfile.findOne({ userId }).session(session),

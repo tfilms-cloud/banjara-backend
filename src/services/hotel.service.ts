@@ -154,12 +154,16 @@ export async function upsertHotelFromProviderProfile(
   const offersGuestStay = (profile.providerType ?? []).some(
     (type) => type === 'guestHouse' || type === 'lodge'
   );
+  // The owner's own choice of type wins; providerType only fills in when none was given
+  // (the website application sets hotelType but never providerType).
   let hotelType = mapHotelType(details.hotelType);
-  if (offersGuestStay && (hotelType === 'hotel' || hotelType === 'resort')) {
-    hotelType = 'guestHouse';
-  }
-  if (!offersGuestStay && (hotelType === 'guestHouse' || hotelType === 'lodge')) {
-    hotelType = 'hotel';
+  if (!String(details.hotelType ?? '').trim()) {
+    if (offersGuestStay && (hotelType === 'hotel' || hotelType === 'resort')) {
+      hotelType = 'guestHouse';
+    }
+    if (!offersGuestStay && (hotelType === 'guestHouse' || hotelType === 'lodge')) {
+      hotelType = 'hotel';
+    }
   }
 
   const gallery = [
@@ -341,7 +345,8 @@ export async function getHotel(id: string) {
   const hotel = assertFound(
     await Hotel.findById(id).populate(
       'providerId',
-      'businessName ownerName phone email description hotelDetails verificationStatus yearsExperience'
+      // userId: lets travellers message the property.
+      'businessName ownerName phone email description hotelDetails verificationStatus yearsExperience userId'
     ),
     'Hotel not found'
   );
@@ -379,6 +384,8 @@ export async function getHotel(id: string) {
   return {
     ...hotel.toObject(),
     providerId: provider?._id?.toString?.() ?? hotel.providerId?.toString?.(),
+    /** The owner’s user id, so travellers can message the property. */
+    providerUserId: (hotel.providerId as { userId?: { toString(): string } } | null)?.userId?.toString?.(),
     description,
     amenities: Array.from(derivedAmenities),
     managerName: String(details.managerName ?? provider?.ownerName ?? '').trim() || undefined,

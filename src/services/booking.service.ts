@@ -597,6 +597,8 @@ export async function enrichBookings(bookings: Array<InstanceType<typeof Booking
       roomsCount: hotel.rooms != null ? Number(hotel.rooms) : null,
       guestsCount: hotel.guests != null ? Number(hotel.guests) : null,
       nights: hotel.nights != null ? Number(hotel.nights) : null,
+      /** booked → checked_in → checked_out (hotel stays). */
+      stayStatus: hotel.stayStatus ? String(hotel.stayStatus) : null,
       guestDetails: hotel.guestDetails ?? pkg.guestDetails ?? null,
       specialRequests:
         (hotel.guestDetails && typeof hotel.guestDetails === 'object'
@@ -954,8 +956,9 @@ export async function markCashReceived(bookingId: string, providerId: string, ac
 
     const payment = booking.paymentId ? await Payment.findById(booking.paymentId).session(session) : null;
     if (!payment) throw new AppError('This booking has no payment record', 409);
-    if (payment.method !== 'cash') {
-      throw new AppError('Only cash payments can be marked as received by hand', 409);
+    // Cash (rides) and pay-at-hotel (stays) are both paid in person.
+    if (payment.method !== 'cash' && payment.method !== 'payAtHotel') {
+      throw new AppError('Only cash or pay-at-hotel payments can be marked as received by hand', 409);
     }
 
     const now = new Date();
@@ -975,7 +978,7 @@ export async function markCashReceived(bookingId: string, providerId: string, ac
         userId: result.booking.customerId.toString(),
         type: 'paymentConfirmed',
         title: 'Payment received',
-        message: `Your driver recorded your cash payment for booking ${result.booking.bookingNumber}.`,
+        message: `Your ${result.booking.bookingType === "hotel" ? "host" : "driver"} recorded your payment for booking ${result.booking.bookingNumber}.`,
         data: { bookingId },
       })
       .catch((err) => {

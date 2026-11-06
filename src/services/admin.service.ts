@@ -254,6 +254,16 @@ export async function setProviderStatus(
     }
   }
 
+  // Lodging: the admin reviewed the property (details, photos, rooms) as part of this
+  // application, so approving the provider publishes their hotel listing too, instead
+  // of leaving it pending a second approval under Hotels.
+  if (status === 'approved' && (profile.services ?? []).includes('hotel')) {
+    const hotel = await hotelService.upsertHotelFromProviderProfile(profile);
+    if (hotel && hotel.approvalStatus !== 'approved') {
+      await hotelService.setHotelApprovalStatus(hotel._id.toString(), 'approved');
+    }
+  }
+
   // Sync guide profileStatus with admin verification
   if ((profile.services ?? []).includes('travelGuide')) {
     const guide = { ...((profile.guideDetails as Record<string, unknown>) ?? {}) };

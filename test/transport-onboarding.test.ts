@@ -502,7 +502,9 @@ describe('Transportation onboarding through real authenticated APIs', () => {
   it('leaves the existing hotel provider flow available', async () => {
     const hotel = await makeUser(app, 'provider', { service: 'hotel' });
     const profile = await authed(app, hotel.token).get('/api/providers/me');
-    expect(profile.body.data.onboardingProgress).toBeUndefined();
+    // Lodging has its own steps now (see lodging-lifecycle.test.ts), never transport's.
+    expect(profile.body.data.onboardingProgress?.service).toBe('hotel');
+    expect(profile.body.data.onboardingProgress?.nextStep).not.toBe('transport');
     expect(
       (await authed(app, hotel.token).get('/api/providers/dashboard')).status,
     ).toBe(200);

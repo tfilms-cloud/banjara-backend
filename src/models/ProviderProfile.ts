@@ -132,7 +132,15 @@ export interface IRestaurantDetails {
 }
 
 export interface IProviderProfile {
-  onboarding?: { locationConfirmed?: boolean; transportConfirmed?: boolean; vehicleId?: Types.ObjectId; submittedAt?: Date };
+  onboarding?: {
+    locationConfirmed?: boolean;
+    transportConfirmed?: boolean;
+    vehicleId?: Types.ObjectId;
+    /** Lodging steps 5 and 6 (see lodgingOnboarding.service). */
+    propertyConfirmed?: boolean;
+    photosConfirmed?: boolean;
+    submittedAt?: Date;
+  };
   _id: Types.ObjectId;
   userId: Types.ObjectId;
   businessName: string;
@@ -340,6 +348,8 @@ const providerSchema = new Schema<IProviderProfile>(
       locationConfirmed: Boolean,
       transportConfirmed: Boolean,
       vehicleId: { type: Schema.Types.ObjectId, ref: 'Vehicle' },
+      propertyConfirmed: Boolean,
+      photosConfirmed: Boolean,
       submittedAt: Date,
     },
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, unique: true, index: true },

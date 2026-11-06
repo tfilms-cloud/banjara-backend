@@ -27,7 +27,7 @@ router.post(
 router.get('/me', requireRole('provider'), providerController.getMe);
 router.put('/me', requireRole('provider'), validate(providerUpdateSchema), providerController.updateMe);
 router.post('/me/onboarding/checkpoint', requireRole('provider'), validate(z.object({
-  step: z.enum(['location', 'transport', 'vehicle']),
+  step: z.enum(['location', 'transport', 'vehicle', 'property', 'photos']),
   vehicleId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
 })), providerController.onboardingCheckpoint);
 router.post('/me/onboarding/submit', requireRole('provider'), providerController.submitOnboarding);
