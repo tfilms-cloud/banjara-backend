@@ -177,6 +177,13 @@ describe('Lodging: application, approval, booking and stay', () => {
       authed(app, owner.token).put(`/api/providers/${path}`).send(body);
     expect((await host(`bookings/${bookingId}/status`, { status: 'confirmed' })).status).toBe(200);
     expect((await host(`bookings/${bookingId}/cash-received`)).body.data.paymentStatus).toBe('paid');
+    // Not before the check-in day…
+    const early = await host(`hotel/bookings/${bookingId}/check-in`);
+    expect(early.status).toBe(409);
+    expect(early.body.message).toMatch(/2030-03-10/);
+    // …and fine once it arrives (the stay moved to today in Pakistan).
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi' }).format(new Date());
+    await Booking.updateOne({ _id: bookingId }, { $set: { 'hotelBooking.checkIn': today } });
     expect((await host(`hotel/bookings/${bookingId}/check-in`)).status).toBe(200);
     expect((await host(`hotel/bookings/${bookingId}/check-out`)).status).toBe(200);
     expect((await Booking.findById(bookingId))?.bookingStatus).toBe('completed');

@@ -976,6 +976,12 @@ export async function providerCheckIn(bookingId: string, providerId: string) {
   if (booking.bookingStatus !== 'confirmed') {
     throw new AppError('Only confirmed bookings can be checked in', 400);
   }
+  // A guest can arrive any time from their check-in day (Pakistan time), not before.
+  const checkInDay = String(booking.hotelBooking?.checkIn ?? '').slice(0, 10);
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi' }).format(new Date());
+  if (/^\d{4}-\d{2}-\d{2}$/.test(checkInDay) && today < checkInDay) {
+    throw new AppError(`This stay starts on ${checkInDay}. The guest can be checked in from that day.`, 409);
+  }
   if (booking.hotelBooking) {
     booking.hotelBooking = { ...booking.hotelBooking, stayStatus: 'checked_in' };
   }
