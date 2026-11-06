@@ -39,16 +39,19 @@ export async function recordAdminEvent(
 }
 
 /**
- * Mount after `authenticate` + `requireRole('admin')`: every successful change
- * (non-GET, status < 400) an admin makes is recorded with who, what and where.
+ * Called by `authenticate` for every admin request: each successful change
+ * (non-GET, status < 400) an admin makes, on any route, is recorded with who,
+ * what and where. Other roles are never recorded.
  */
 export function auditAdminChanges(req: AuthRequest, res: Response, next: NextFunction) {
   if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  if (req.user?.role !== 'admin') return next();
   res.on('finish', () => {
     if (res.statusCode >= 400 || !req.user) return;
-    // `/providers/6a1…/approve` → action "PUT /providers/:id/approve", entity "providers".
+    // `/api/admin/providers/6a1…/approve` → "PUT /providers/:id/approve", entity "providers";
+    // `/api/payments/6a1…/refund` → "POST /payments/:id/refund", entity "payments".
     // Taken from the path itself: req.route/req.params are not reliable after routing.
-    const path = req.originalUrl.split('?')[0].replace(/^\/api\/admin/, '') || '/';
+    const path = req.originalUrl.split('?')[0].replace(/^\/api(\/admin)?/, '') || '/';
     const id = path.match(/[0-9a-f]{24}/i)?.[0];
     const ua = req.headers['user-agent'];
     void write({

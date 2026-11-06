@@ -3,14 +3,15 @@ import * as adminController from '../controllers/admin.controller';
 import * as serviceCatalogController from '../controllers/serviceCatalog.controller';
 import { authenticate } from '../middleware/auth.middleware';
 import { requireAdminTwoFactor, requireRole } from '../middleware/role.middleware';
-import { auditAdminChanges, listAuditLogs } from '../services/audit.service';
+import { listAuditLogs } from '../services/audit.service';
 import { sendSuccess } from '../utils/apiResponse';
 import { validate } from '../middleware/validation.middleware';
 import { updateSupportSchema } from '../validators/support.validator';
 import { adminModerateItinerarySchema } from '../validators/tourItinerary.validator';
 
 const router = Router();
-router.use(authenticate, requireRole('admin'), requireAdminTwoFactor, auditAdminChanges);
+// authenticate also applies the 2-step rule and the audit trail to every admin request.
+router.use(authenticate, requireRole('admin'), requireAdminTwoFactor);
 
 router.get('/audit-logs', async (req, res, next) => {
   try {

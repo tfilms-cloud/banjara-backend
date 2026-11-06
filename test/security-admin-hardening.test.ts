@@ -223,6 +223,55 @@ describe('Security — account lockout and admin 2-step verification', () => {
     expect((await request(app).get('/api/admin/dashboard').set(bearer(access))).status).toBe(200);
   });
 
+  it('the 2-step rule also covers admin use of shared routes (support, payments, bookings)', async () => {
+    env.ADMIN_REQUIRE_2FA = true;
+    const access = (await login()).body.data.tokens.accessToken as string;
+    const customer = await makeUser(app, 'customer');
+    const ticket = await request(app)
+      .post('/api/support')
+      .set(bearer(customer.token))
+      .send({ category: 'booking', subject: 'Late pickup', message: 'Driver was late' });
+    expect(ticket.status).toBe(201);
+    const ticketId = ticket.body.data._id as string;
+
+    for (const call of [
+      request(app).put(`/api/support/${ticketId}`).set(bearer(access)).send({ status: 'resolved' }),
+      request(app).get('/api/support').set(bearer(access)),
+      request(app).get('/api/payments/000000000000000000000000').set(bearer(access)),
+      request(app).post('/api/payments/000000000000000000000000/refund').set(bearer(access)).send({}),
+    ]) {
+      const res = await call;
+      expect(res.status).toBe(403);
+      expect(res.body.errors).toEqual([{ code: 'TWO_FACTOR_SETUP_REQUIRED' }]);
+    }
+    // Other roles are unaffected, and /api/auth stays usable for setup.
+    expect((await request(app).get('/api/support').set(bearer(customer.token))).status).toBe(200);
+    expect((await request(app).get('/api/auth/me').set(bearer(access))).status).toBe(200);
+    // Public routes: the admin just browses as a guest.
+    expect((await request(app).get('/api/hotels').set(bearer(access))).status).toBe(200);
+  });
+
+  it('audits admin changes made through shared routes, but never other roles', async () => {
+    const access = (await login()).body.data.tokens.accessToken as string;
+    const customer = await makeUser(app, 'customer');
+    const ticket = await request(app)
+      .post('/api/support')
+      .set(bearer(customer.token))
+      .send({ category: 'booking', subject: 'Late pickup', message: 'Driver was late' });
+    const ticketId = ticket.body.data._id as string;
+    const res = await request(app).put(`/api/support/${ticketId}`).set(bearer(access)).send({ status: 'resolved' });
+    expect(res.status).toBe(200);
+
+    await new Promise((r) => setTimeout(r, 200)); // the audit write runs after the response
+    const entry = await AdminAuditLog.findOne({ action: 'PUT /support/:id' }).lean();
+    expect(entry?.entityType).toBe('support');
+    expect(entry?.entityId?.toString()).toBe(ticketId);
+    expect(JSON.stringify(entry?.meta)).toContain('resolved');
+    // The customer's own POST /api/support is not an admin action.
+    expect(await AdminAuditLog.countDocuments({ adminId: customer.id })).toBe(0);
+    expect(await AdminAuditLog.countDocuments({ action: 'POST /support' })).toBe(0);
+  });
+
   it('records admin sign-ins, failures and changes in the audit log', async () => {
     await login('WrongPass1');
     const access = (await login()).body.data.tokens.accessToken as string;

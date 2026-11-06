@@ -5,6 +5,8 @@ import type { UserRole } from '../types/auth.types';
 import { AppError } from '../utils/AppError';
 import { verifyAccessToken } from '../utils/jwt';
 import { isSessionActive } from '../services/session.service';
+import { auditAdminChanges } from '../services/audit.service';
+import { requireAdminTwoFactor } from './role.middleware';
 
 export interface AuthRequest extends Request {
   user?: {
@@ -18,7 +20,7 @@ export interface AuthRequest extends Request {
   };
 }
 
-export async function authenticate(req: AuthRequest, _res: Response, next: NextFunction) {
+export async function authenticate(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const header = req.headers.authorization;
     if (!header?.startsWith('Bearer ')) {
@@ -50,14 +52,36 @@ export async function authenticate(req: AuthRequest, _res: Response, next: NextF
       sessionId: payload.sid,
       twoFactorEnabled: Boolean(user.twoFactor?.enabled),
     };
+
+    // Admins reach data through shared routes too (payments, support, bookings), not
+    // only /api/admin, so the 2-step rule and the audit trail apply wherever an admin
+    // token is used. /api/auth stays open: it is where they sign in and set 2-step up.
+    if (user.role === 'admin' && !ADMIN_SETUP_PATH.test(req.originalUrl)) {
+      let gate: unknown;
+      requireAdminTwoFactor(req, res, (err?: unknown) => {
+        gate = err;
+      });
+      if (gate) throw gate;
+      auditAdminChanges(req, res, () => undefined);
+    }
     next();
   } catch (error) {
     next(error instanceof AppError ? error : new AppError('Invalid or expired token', 401));
   }
 }
 
+/** Sign-in, 2-step setup, sessions and /me: usable before 2-step is on. */
+const ADMIN_SETUP_PATH = /^\/api\/auth(\/|\?|$)/;
+
 export function optionalAuth(req: AuthRequest, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) return next();
-  return authenticate(req, res, next);
+  return authenticate(req, res, (err?: unknown) => {
+    // On public routes an admin without 2-step simply browses as a guest.
+    if (err instanceof AppError && err.errors?.some((e) => (e as { code?: string }).code === 'TWO_FACTOR_SETUP_REQUIRED')) {
+      req.user = undefined;
+      return next();
+    }
+    return next(err as Error | undefined);
+  });
 }
