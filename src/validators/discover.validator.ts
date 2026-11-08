@@ -25,6 +25,10 @@ export const discoverQuerySchema = z.object({
   view: z.enum(['list', 'map']).default('list').catch('list'),
   /** Map viewport as "west,south,east,north" (degrees). Invalid values are ignored. */
   bbox: z.string().max(100).optional().catch(undefined),
+  /** "Near me": the visitor's position as "lat,lng". Invalid values are ignored. */
+  near: z.string().max(60).optional().catch(undefined),
+  /** Radius for `near`, in km (1–50, default 10). */
+  radius: z.coerce.number().min(1).max(50).optional().catch(undefined),
   /** Sub-type filter, e.g. "jeep", "guest_house", "female", "trek". */
   category: z.string().trim().max(32).optional(),
   /** Comma-separated quick-filter ids, e.g. "verified,topRated". */

@@ -391,6 +391,24 @@ function parseBbox(raw: string | undefined): [number, number, number, number] | 
   if (s < -90 || n > 90 || w < -180 || e > 180 || s > n) return null;
   return [w, s, e, n];
 }
+/** "lat,lng" -> a valid position, or null. */
+function parseNear(raw: string | undefined): { lat: number; lng: number } | null {
+  if (!raw) return null;
+  const parts = raw.split(',').map((part) => Number(part.trim()));
+  if (parts.length !== 2 || parts.some((n) => !Number.isFinite(n))) return null;
+  const [lat, lng] = parts;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+export const DEFAULT_NEAR_RADIUS_KM = 10;
+/** Great-circle distance in km (haversine). */
+export function distanceKm(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const rad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat);
+  const dLng = rad(b.lng - a.lng);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
 function boundsOf(cards: DiscoverCard[]): [[number, number], [number, number]] | null {
   const pins = cards.map((card) => card.location).filter((l): l is DiscoverLocation => !!l);
   if (!pins.length) return null;
@@ -413,6 +431,9 @@ export async function discover(
       only?: string;
       view?: 'list' | 'map';
       bbox?: string;
+      /** "lat,lng": keep only listings within `radius` km, nearest first. */
+      near?: string;
+      radius?: number;
       limit: number;
     },
   now: Date = new Date()
@@ -456,6 +477,17 @@ export async function discover(
         card.location.lat <= box[3]
     );
   }
+  const origin = parseNear(input.near);
+  const radiusKm = origin ? Math.min(50, Math.max(1, input.radius ?? DEFAULT_NEAR_RADIUS_KM)) : 0;
+  if (origin) {
+    // Distance is measured to the pin: a ride's pickup point, a stay's address.
+    refined = refined
+      .filter((card) => !!card.location)
+      .map((card) => ({ ...card, distanceKm: Math.round(distanceKm(origin, card.location!) * 10) / 10 }))
+      .filter((card) => card.distanceKm <= radiusKm);
+    // "Recommended" near me means nearest first; an explicit sort still wins.
+    if (order === 'recommended') refined.sort((a, b) => a.distanceKm! - b.distanceKm!);
+  }
   const items = refined.slice(0, input.limit);
   return {
     service: input.service,
@@ -465,5 +497,6 @@ export async function discover(
     // Categories come from the unfiltered candidates so every chip stays visible.
     options: { ...discoverOptions(input.service), categories: categoryOptions(input.service, candidates) },
     applied: { order, only, category },
+    near: origin ? { ...origin, radiusKm } : null,
   };
 }

@@ -301,6 +301,39 @@ describe('GET /api/discover', () => {
     }
   });
 
+  it('finds listings near the visitor within a radius, nearest first', async () => {
+    const all = await get({ service: 'transport', view: 'map', limit: 300 });
+    expect(all.body.data.near).toBeNull();
+    const pin = all.body.data.items[0].location;
+    const near = `${pin.lat},${pin.lng}`;
+
+    const close = await get({ service: 'transport', view: 'map', near, limit: 300 });
+    expect(close.status).toBe(200);
+    expect(close.body.data.near).toEqual({ lat: pin.lat, lng: pin.lng, radiusKm: 10 });
+    const items: DiscoverCard[] = close.body.data.items;
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((i) => typeof i.distanceKm === 'number' && i.distanceKm <= 10)).toBe(true);
+    const distances = items.map((i) => i.distanceKm!);
+    expect(distances).toEqual([...distances].sort((a, b) => a - b));
+    expect(items[0].distanceKm).toBe(0);
+
+    // A wider radius never returns fewer rides; the radius is clamped to 1–50 km.
+    const wide = await get({ service: 'transport', view: 'map', near, radius: 20, limit: 300 });
+    expect(wide.body.data.near.radiusKm).toBe(20);
+    expect(wide.body.data.total).toBeGreaterThanOrEqual(close.body.data.total);
+    const clamped = await get({ service: 'transport', near, radius: 999 });
+    expect(clamped.body.data.near.radiusKm).toBe(10);
+
+    // Somewhere with no listings at all (mid-Atlantic) is an empty result, not an error.
+    const nowhere = await get({ service: 'transport', near: '0,-30' });
+    expect(nowhere.body.data.total).toBe(0);
+    for (const bad of ['nonsense', '91,0', '1,2,3']) {
+      const res = await get({ service: 'transport', near: bad });
+      expect(res.status, bad).toBe(200);
+      expect(res.body.data.near, bad).toBeNull();
+    }
+  });
+
   it('treats search text literally and respects the limit', async () => {
     const res = await get({ service: 'hotels', q: '(a+)+$', limit: 1 });
     expect(res.status).toBe(200);

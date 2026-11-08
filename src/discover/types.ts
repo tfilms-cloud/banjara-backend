@@ -54,6 +54,8 @@ export interface DiscoverCard {
   languages?: string[];
   freeCancellation?: boolean;
   breakfastIncluded?: boolean;
+  /** Only with `near`: straight-line distance (km, 1 decimal) from the visitor to the pin. */
+  distanceKm?: number;
 }
 
 export interface DiscoverOptions {
@@ -72,4 +74,6 @@ export interface DiscoverResult {
   applied: { order: DiscoverSort; only: DiscoverToggle[]; category: string | null };
   /** Map view only: [[south, west], [north, east]] around the returned pins. */
   bounds: [[number, number], [number, number]] | null;
+  /** The "near me" search that was applied, or null. */
+  near: { lat: number; lng: number; radiusKm: number } | null;
 }
