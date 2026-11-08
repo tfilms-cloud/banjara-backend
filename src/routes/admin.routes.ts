@@ -8,6 +8,8 @@ import { sendSuccess } from '../utils/apiResponse';
 import { validate } from '../middleware/validation.middleware';
 import { updateSupportSchema } from '../validators/support.validator';
 import { adminModerateItinerarySchema } from '../validators/tourItinerary.validator';
+import * as intercityController from '../controllers/intercity.controller';
+import { commissionSettingsSchema, reviewCommissionPaymentSchema } from '../validators/intercity.validator';
 
 const router = Router();
 // authenticate also applies the 2-step rule and the audit trail to every admin request.
@@ -93,5 +95,17 @@ router.put(
   validate(adminModerateItinerarySchema),
   adminController.moderateTourItinerary
 );
+
+
+// City to City commission: drivers' reported payments and the commission rules.
+router.get('/intercity/commission/payments', intercityController.adminCommissionPayments);
+router.post('/intercity/commission/payments/:id/approve', intercityController.adminApproveCommissionPayment);
+router.post(
+  '/intercity/commission/payments/:id/reject',
+  validate(reviewCommissionPaymentSchema),
+  intercityController.adminRejectCommissionPayment
+);
+router.get('/intercity/commission/settings', intercityController.adminCommissionSettings);
+router.put('/intercity/commission/settings', validate(commissionSettingsSchema), intercityController.adminUpdateCommissionSettings);
 
 export default router;

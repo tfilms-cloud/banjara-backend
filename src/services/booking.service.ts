@@ -24,6 +24,7 @@ import * as notificationService from './notification.service';
 import * as serviceCatalogService from './serviceCatalog.service';
 import * as guideService from './guide.service';
 import { getIntercitySettings, isLateCancellation } from './intercityFare.service';
+import { recordCommission } from './driverBalance.service';
 import {
   confirmTripSeats,
   releaseTripSeats,
@@ -33,12 +34,20 @@ import {
 
 export { recomputeTripSeatCounters };
 
-/** Tax + service fee on any subtotal (all booking types, incl. City to City). */
+/** Tax + service fee on any subtotal (every booking type except City to City). */
 export function calcPricing(subtotal: number, discount = 0) {
   const tax = Math.round(subtotal * env.TAX_RATE);
   const serviceFee = env.SERVICE_FEE;
   const totalAmount = Math.max(0, subtotal + tax + serviceFee - discount);
   return { subtotal, tax, serviceFee, discount, totalAmount, currency: 'PKR' };
+}
+
+/**
+ * City to City: the rider pays the agreed fare only. BANJARA's commission is charged to
+ * the driver instead (see driverBalance.service).
+ */
+export function fareOnlyPricing(subtotal: number, discount = 0) {
+  return { subtotal, tax: 0, serviceFee: 0, discount, totalAmount: Math.max(0, subtotal - discount), currency: 'PKR' };
 }
 
 export async function createBooking(
@@ -125,18 +134,19 @@ export async function createBooking(
       // (A failed check below releases the seats just reserved: see the catch.)
       const seatCount = input.transportBooking.seats.length;
       const passengerCount = input.transportBooking.passengerDetails.length;
+      const price = trip.rideType === 'intercity' ? fareOnlyPricing : calcPricing;
       if (trip.bookingMode === 'vehicle') {
         // Hiring the whole vehicle: every seat, one vehicle fare, 1+ named passengers.
         if (seatCount !== trip.totalSeats) {
           throw new AppError('This trip is booked as a whole vehicle. Book every seat.', 422);
         }
-        pricing = calcPricing(trip.price);
+        pricing = price(trip.price);
       } else {
         if (seatCount > 10) throw new AppError('You can book up to 10 seats at a time', 422);
         if (passengerCount !== seatCount) {
           throw new AppError('Number of passengers must match number of seats', 422);
         }
-        pricing = calcPricing(trip.price * seatCount);
+        pricing = price(trip.price * seatCount);
       }
       transportBooking = {
         ...input.transportBooking,
@@ -963,6 +973,10 @@ export async function updateProviderBookingStatus(
     }
     booking.bookingStatus = 'completed';
     await booking.save();
+    // City to City: the driver now owes BANJARA its commission on the agreed fare.
+    await recordCommission(booking).catch((err) => {
+      log().error({ bookingId, err }, '[booking] recording City to City commission failed');
+    });
     await notificationService
       .createNotification({
         userId: booking.customerId.toString(),

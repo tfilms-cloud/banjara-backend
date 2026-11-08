@@ -71,6 +71,37 @@ export const respondSchema = z.object({
 
 export const tripStatusSchema = z.object({ status: z.enum(['departed', 'completed']) });
 
+const PAY_CHANNELS = ['bank', 'easypaisa', 'jazzcash', 'raast', 'other'] as const;
+
+/** A driver reports paying BANJARA its City to City commission. */
+export const commissionPaymentSchema = z.object({
+  amount: z.coerce.number().int().positive().max(10_000_000),
+  channel: z.enum(PAY_CHANNELS),
+  reference: z.string().trim().min(4, 'Enter the transaction ID from your receipt').max(80),
+  note: z.string().trim().max(300).optional(),
+});
+
+export const reviewCommissionPaymentSchema = z.object({
+  reason: z.string().trim().max(300).optional(),
+});
+
+export const commissionSettingsSchema = z.object({
+  commissionPercent: z.coerce.number().min(0).max(100).optional(),
+  maxDriverDue: z.coerce.number().int().min(0).max(10_000_000).optional(),
+  maxDueDays: z.coerce.number().int().min(0).max(365).optional(),
+  collectionAccounts: z
+    .array(
+      z.object({
+        channel: z.enum(PAY_CHANNELS),
+        accountTitle: z.string().trim().min(2).max(100),
+        accountNumber: z.string().trim().min(4).max(60),
+        note: z.string().trim().max(200).optional(),
+      })
+    )
+    .max(10)
+    .optional(),
+});
+
 export const locationBatchSchema = z.object({
   points: z
     .array(

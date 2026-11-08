@@ -5,6 +5,7 @@ import { requireRole } from '../middleware/role.middleware';
 import { validate } from '../middleware/validation.middleware';
 import {
   chooseOfferSchema,
+  commissionPaymentSchema,
   driverSettingsSchema,
   intercityQuoteSchema,
   intercityRequestSchema,
@@ -43,6 +44,9 @@ router.post('/requests/:id/join', authenticate, requireRole('customer'), validat
 router.get('/driver/settings', authenticate, requireRole('provider'), c.driverSettings);
 router.put('/driver/settings', authenticate, requireRole('provider'), validate(driverSettingsSchema), c.updateDriverSettings);
 router.get('/driver/requests', authenticate, requireRole('provider'), c.driverFeed);
+// Commission owed to BANJARA (works even while the feature is switched off: money is still owed).
+router.get('/driver/balance', authenticate, requireRole('provider'), c.driverBalance);
+router.post('/driver/balance/payments', authenticate, requireRole('provider'), validate(commissionPaymentSchema), c.reportCommissionPayment);
 router.post('/driver/requests/:id/respond', authenticate, requireRole('provider'), validate(respondSchema), c.respond);
 router.put('/driver/trips/:id/status', authenticate, requireRole('provider'), validate(tripStatusSchema), c.tripStatus);
 router.post('/driver/bookings/:id/no-show', authenticate, requireRole('provider'), c.noShow);

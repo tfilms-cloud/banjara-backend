@@ -1,6 +1,7 @@
 import { NextFunction, Response } from 'express';
 import type { AuthRequest } from '../middleware/auth.middleware';
 import * as intercity from '../services/intercityRequest.service';
+import * as balance from '../services/driverBalance.service';
 import { sendSuccess } from '../utils/apiResponse';
 import { AppError } from '../utils/AppError';
 import { paramId } from '../utils/params';
@@ -41,6 +42,27 @@ export const joinShared = handle((req) => intercity.joinSharedTrip(req.user!.id,
 export const driverSettings = handle((req) => intercity.getDriverSettings(providerId(req)));
 export const updateDriverSettings = handle((req) => intercity.updateDriverSettings(providerId(req), req.body), 'Saved');
 export const driverFeed = handle((req) => intercity.driverFeed(providerId(req)));
+export const driverBalance = handle((req) => balance.getDriverBalance(providerId(req)));
+export const reportCommissionPayment = handle(
+  (req) => balance.submitPayment(providerId(req), req.body),
+  'Payment reported. It counts once BANJARA confirms it.',
+  201
+);
+
+/* Admin */
+export const adminCommissionPayments = handle((req) =>
+  balance.listPayments((['pending', 'approved', 'rejected', 'all'].includes(String(req.query.status)) ? req.query.status : 'pending') as never)
+);
+export const adminApproveCommissionPayment = handle(
+  (req) => balance.reviewPayment(req.user!.id, paramId(req.params.id), 'approve'),
+  'Payment approved'
+);
+export const adminRejectCommissionPayment = handle(
+  (req) => balance.reviewPayment(req.user!.id, paramId(req.params.id), 'reject', req.body?.reason),
+  'Payment rejected'
+);
+export const adminCommissionSettings = handle(() => balance.getCommissionSettings());
+export const adminUpdateCommissionSettings = handle((req) => balance.updateCommissionSettings(req.body), 'Commission settings saved');
 export const respond = handle((req) => intercity.respondToRequest(providerId(req), paramId(req.params.id), req.body), 'Answer sent');
 export const tripStatus = handle((req) => intercity.setTripStatus(providerId(req), paramId(req.params.id), req.body.status));
 export const noShow = handle((req) => intercity.markNoShow(providerId(req), paramId(req.params.id)), 'Marked as no-show');

@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app';
 import { env } from '../src/config/env';
+import { Types } from 'mongoose';
 import { Booking } from '../src/models/Booking';
+import { DriverLedgerEntry } from '../src/models/DriverLedgerEntry';
 import { IntercitySettings } from '../src/models/IntercitySettings';
 import { ProviderProfile } from '../src/models/ProviderProfile';
 import { RideRequest } from '../src/models/RideRequest';
@@ -10,6 +12,7 @@ import { Trip } from '../src/models/Trip';
 import { Vehicle } from '../src/models/Vehicle';
 import { applyIntercitySeed } from '../src/seed/intercitySeed';
 import { expireOpenRequests } from '../src/services/intercityRequest.service';
+import { recordCommission } from '../src/services/driverBalance.service';
 import { clearDatabase, setupTestDb, teardownTestDb } from './helpers/db';
 import { authed, makeUser, type TestUser } from './helpers/auth';
 
@@ -124,7 +127,8 @@ describe('City to City rides', () => {
     expect(quote.body.data.source).toBe('route');
     // Seeded placeholder: 18,000 + 600 tolls + 2,000 mountain surcharge.
     expect(quote.body.data.subtotal).toBe(20700);
-    expect(quote.body.data.total).toBe(20700 + 2070 + 200);
+    // City to City riders pay the fare only; BANJARA's commission is charged to the driver.
+    expect(quote.body.data).toMatchObject({ tax: 0, serviceFee: 0, total: 20700 });
 
     const sameCity = await authed(app)
       .post('/api/intercity/quote')
@@ -176,11 +180,11 @@ describe('City to City rides', () => {
     expect(chosen.status).toBe(200);
     expect(chosen.body.data.status).toBe('matched');
     // The rider now sees the agreed price, not the original quote.
-    expect(chosen.body.data.estimate).toEqual({ subtotal: 22000, tax: 2200, serviceFee: 200, total: 24400 });
+    expect(chosen.body.data.estimate).toEqual({ subtotal: 22000, tax: 0, serviceFee: 0, total: 22000 });
 
     // It is now an ordinary, confirmed transport booking on an intercity trip.
     const booking = await Booking.findById(chosen.body.data.bookingId).lean();
-    expect(booking).toMatchObject({ bookingType: 'transport', bookingStatus: 'confirmed', subtotal: 22000, tax: 2200, serviceFee: 200 });
+    expect(booking).toMatchObject({ bookingType: 'transport', bookingStatus: 'confirmed', subtotal: 22000, tax: 0, serviceFee: 0, totalAmount: 22000 });
     // The breakdown adds up to what is charged: quote lines + the counter-offer difference.
     const lines = (booking as { fareBreakdown?: { lines: Array<{ code: string; amount: number }> } }).fareBreakdown!.lines;
     expect(lines.reduce((sum, l) => sum + l.amount, 0)).toBe(22000);
@@ -221,6 +225,97 @@ describe('City to City rides', () => {
 
     expect((await authed(app, near.token).put(`/api/intercity/driver/trips/${trip!._id}/status`).send({ status: 'completed' })).status).toBe(200);
     expect((await Booking.findById(booking!._id).lean())?.bookingStatus).toBe('completed');
+
+    // The rider paid the driver 22,000 in cash; the driver now owes BANJARA 10% of it.
+    const owed = (await authed(app, near.token).get('/api/intercity/driver/balance')).body.data;
+    expect(owed).toMatchObject({ owed: 2200, pendingPayments: 0, blocked: false, commissionPercent: 10 });
+    expect(owed.entries[0]).toMatchObject({ kind: 'commission', amount: 2200, fare: 22000, percent: 10, bookingNumber: booking!.bookingNumber });
+    // Completing again can't charge twice.
+    await recordCommission(booking!);
+    expect((await authed(app, near.token).get('/api/intercity/driver/balance')).body.data.owed).toBe(2200);
+
+    // The driver pays and reports it; it counts once an admin approves it.
+    const tooMuch = await authed(app, near.token).post('/api/intercity/driver/balance/payments').send({ amount: 5000, channel: 'easypaisa', reference: 'EP-123456' });
+    expect(tooMuch.status).toBe(422);
+    const report = await authed(app, near.token)
+      .post('/api/intercity/driver/balance/payments')
+      .send({ amount: 2200, channel: 'easypaisa', reference: 'EP-123456' });
+    expect(report.status).toBe(201);
+    expect(report.body.data).toMatchObject({ kind: 'payment', status: 'pending', amount: 2200 });
+    const again = await authed(app, near.token).post('/api/intercity/driver/balance/payments').send({ amount: 100, channel: 'easypaisa', reference: 'EP-999999' });
+    expect(again.status).toBe(409); // already fully covered by the pending payment
+    expect((await authed(app, near.token).get('/api/intercity/driver/balance')).body.data).toMatchObject({ owed: 2200, pendingPayments: 2200 });
+
+    const admin = await makeUser(app, 'admin');
+    expect((await authed(app, near.token).get('/api/admin/intercity/commission/payments')).status).toBe(403);
+    const queue = (await authed(app, admin.token).get('/api/admin/intercity/commission/payments')).body.data;
+    expect(queue).toHaveLength(1);
+    expect(queue[0]).toMatchObject({ reference: 'EP-123456', amount: 2200, driverOwed: 2200 });
+    expect((await authed(app, admin.token).post(`/api/admin/intercity/commission/payments/${queue[0].id}/approve`)).status).toBe(200);
+    expect((await authed(app, admin.token).post(`/api/admin/intercity/commission/payments/${queue[0].id}/approve`)).status).toBe(409);
+    expect((await authed(app, near.token).get('/api/intercity/driver/balance')).body.data).toMatchObject({ owed: 0, pendingPayments: 0, dueSince: null });
+  });
+
+  it('stops drivers who owe too much, or for too long, from taking new requests until they pay', async () => {
+    const admin = await makeUser(app, 'admin');
+    const d = await driver();
+    // A completed ride left 2,200 unpaid.
+    await DriverLedgerEntry.create({ providerId: d.providerId, kind: 'commission', status: 'posted', amount: 2200, fare: 22000, percent: 10 });
+
+    // Under the Rs 5,000 limit and recent: still taking rides.
+    const rider = await makeUser(app, 'customer');
+    const open = await requestRide(rider);
+    expect(open.status).toBe(201);
+    let feed = (await authed(app, d.token).get('/api/intercity/driver/requests')).body.data;
+    expect(feed.balance).toMatchObject({ owed: 2200, blocked: false });
+    expect(feed.requests).toHaveLength(1);
+
+    // An admin lowers the limit below what the driver owes: blocked, with a clear reason.
+    const saved = await authed(app, admin.token).put('/api/admin/intercity/commission/settings').send({
+      maxDriverDue: 1000,
+      collectionAccounts: [{ channel: 'easypaisa', accountTitle: 'BANJARA Travel', accountNumber: '0300-1234567' }],
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.data).toMatchObject({ commissionPercent: 10, maxDriverDue: 1000, maxDueDays: 7 });
+    feed = (await authed(app, d.token).get('/api/intercity/driver/requests')).body.data;
+    expect(feed.balance).toMatchObject({ owed: 2200, blocked: true });
+    expect(feed.balance.message).toMatch(/Rs 1,000 limit/);
+    expect(feed.requests).toHaveLength(0);
+    const refused = await authed(app, d.token).post(`/api/intercity/driver/requests/${open.body.data.id}/respond`).send({ action: 'accept' });
+    expect(refused.status).toBe(403);
+    expect(refused.body.message).toMatch(/Pay your balance/);
+    const balance = (await authed(app, d.token).get('/api/intercity/driver/balance')).body.data;
+    expect(balance.payTo).toEqual([{ channel: 'easypaisa', accountTitle: 'BANJARA Travel', accountNumber: '0300-1234567' }]);
+
+    // Back under the limit but unpaid for more than 7 days: still blocked.
+    await authed(app, admin.token).put('/api/admin/intercity/commission/settings').send({ maxDriverDue: 5000 });
+    await DriverLedgerEntry.collection.updateMany({ providerId: new Types.ObjectId(d.providerId) }, { $set: { createdAt: new Date(Date.now() - 8 * 24 * 3600_000) } });
+    feed = (await authed(app, d.token).get('/api/intercity/driver/requests')).body.data;
+    expect(feed.balance.blocked).toBe(true);
+    expect(feed.balance.message).toMatch(/more than 7 days/);
+
+    // Paying it off (approved) lifts the block.
+    const paid = await authed(app, d.token).post('/api/intercity/driver/balance/payments').send({ amount: 2200, channel: 'bank', reference: 'HBL-778899' });
+    const [pending] = (await authed(app, admin.token).get('/api/admin/intercity/commission/payments')).body.data;
+    expect(pending.id).toBe(paid.body.data.id);
+    await authed(app, admin.token).post(`/api/admin/intercity/commission/payments/${pending.id}/approve`);
+    feed = (await authed(app, d.token).get('/api/intercity/driver/requests')).body.data;
+    expect(feed.balance).toMatchObject({ owed: 0, blocked: false });
+    expect(feed.requests).toHaveLength(1);
+  });
+
+  it('a rejected payment does not reduce the balance', async () => {
+    const admin = await makeUser(app, 'admin');
+    const d = await driver();
+    await DriverLedgerEntry.create({ providerId: d.providerId, kind: 'commission', status: 'posted', amount: 1500 });
+    const report = await authed(app, d.token).post('/api/intercity/driver/balance/payments').send({ amount: 1500, channel: 'jazzcash', reference: 'JC1' });
+    expect(report.status).toBe(422); // transaction ID too short
+    const ok = await authed(app, d.token).post('/api/intercity/driver/balance/payments').send({ amount: 1500, channel: 'jazzcash', reference: 'JC-424242' });
+    const rejected = await authed(app, admin.token)
+      .post(`/api/admin/intercity/commission/payments/${ok.body.data.id}/reject`)
+      .send({ reason: 'No such transaction' });
+    expect(rejected.body.data).toMatchObject({ status: 'rejected', rejectionReason: 'No such transaction' });
+    expect((await authed(app, d.token).get('/api/intercity/driver/balance')).body.data).toMatchObject({ owed: 1500, pendingPayments: 0 });
   });
 
   it('enforces the lead time and the lowest rider offer', async () => {

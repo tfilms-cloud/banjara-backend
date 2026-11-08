@@ -6,6 +6,7 @@ import type { IntercityClass } from '../models/RouteFare';
 import type { IRideRequest } from '../models/RideRequest';
 import type { IIntercitySettings } from '../models/IntercitySettings';
 import { haversineKm } from './intercityFare.service';
+import { blockedProviderIds } from './driverBalance.service';
 
 /**
  * Which drivers may see a City to City request. A driver qualifies when they:
@@ -86,8 +87,12 @@ export async function findEligibleDrivers(
     return (ic.preferredRoutes ?? []).some((r) => String(r.fromCityId ?? '') === pickupCity);
   });
   if (!nearby.length) return [];
+  // Drivers who owe BANJARA too much commission (or for too long) get no new requests.
+  const blocked = await blockedProviderIds(nearby.map((p) => String(p._id)));
+  const inGoodStanding = nearby.filter((p) => !blocked.has(String(p._id)));
+  if (!inGoodStanding.length) return [];
 
-  const ids = nearby.map((p) => p._id);
+  const ids = inGoodStanding.map((p) => p._id);
   const vehicles = await Vehicle.find({ providerId: { $in: ids }, status: 'active' })
     .select('providerId type seatCount name registrationNumber')
     .lean();
@@ -103,7 +108,7 @@ export async function findEligibleDrivers(
   const busyIds = new Set(busy.map((t) => String(t.providerId)));
 
   const matches: MatchedDriver[] = [];
-  for (const p of nearby) {
+  for (const p of inGoodStanding) {
     if (busyIds.has(String(p._id))) continue;
     const vehicle = vehicles.find(
       (v) =>

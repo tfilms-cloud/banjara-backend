@@ -11,7 +11,8 @@ import { getIO } from '../sockets/socket';
 import { AppError, assertFound } from '../utils/AppError';
 import { log } from '../utils/logger';
 import * as bookingService from './booking.service';
-import { calcPricing } from './booking.service';
+import { fareOnlyPricing } from './booking.service';
+import { assertCanTakeRides, getDriverBalance } from './driverBalance.service';
 import { getCity, listActiveCities, publicCity, resolveCity } from './city.service';
 import { computeFare, findRouteFare, getIntercitySettings, haversineKm, type ReturnWait } from './intercityFare.service';
 import { findEligibleDrivers, intercityClassOf } from './intercityMatching.service';
@@ -147,7 +148,7 @@ export async function listCities() {
 export async function quote(input: QuoteInput) {
   await assertIntercityEnabled();
   const { from, to, quote: fare } = await priceRequest(input);
-  const pricing = calcPricing(fare.subtotal);
+  const pricing = fareOnlyPricing(fare.subtotal);
   return {
     fromCity: publicCity(from),
     toCity: publicCity(to),
@@ -311,7 +312,7 @@ async function serializeForRider(request: InstanceType<typeof RideRequest> | IRi
   ]);
   // Once a driver is chosen, the agreed price is what the rider pays.
   const chosen = doc.offers.find((o) => doc.chosenOfferId && String(o._id) === String(doc.chosenOfferId));
-  const pricing = calcPricing(chosen?.amount ?? doc.riderOffer ?? doc.quote.subtotal);
+  const pricing = fareOnlyPricing(chosen?.amount ?? doc.riderOffer ?? doc.quote.subtotal);
   const steps = radiusSteps(await getIntercitySettings());
   return {
     id: doc._id.toString(),
@@ -904,6 +905,20 @@ export async function driverFeed(providerId: string) {
         .filter((b) => (b.transportBooking as { tripId?: string } | undefined)?.tripId === String(t._id))
         .map((b) => ({ id: String(b._id), number: b.bookingNumber, total: b.totalAmount, status: b.bookingStatus })),
     })),
+    // What the driver owes BANJARA; when blocked, `requests` is empty and `message` says why.
+    balance: await balanceBanner(providerId),
+  };
+}
+
+async function balanceBanner(providerId: string) {
+  const b = await getDriverBalance(providerId);
+  return {
+    owed: b.owed,
+    pendingPayments: b.pendingPayments,
+    blocked: b.blocked,
+    message: b.message,
+    maxDriverDue: b.maxDriverDue,
+    commissionPercent: b.commissionPercent,
   };
 }
 
@@ -913,6 +928,8 @@ export async function respondToRequest(
   input: { action: 'accept' | 'decline' | 'counter'; amount?: number; vehicleId?: string }
 ) {
   const settings = await assertIntercityEnabled();
+  // Say plainly when unpaid commission is the reason (matching would just hide the request).
+  await assertCanTakeRides(providerId);
   const request = assertFound(await RideRequest.findById(id), 'Ride request not found');
   if (request.status !== 'open' || request.expiresAt.getTime() <= Date.now()) {
     throw new AppError('This request is no longer open.', 409);

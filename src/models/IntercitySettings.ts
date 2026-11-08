@@ -46,6 +46,17 @@ export interface IIntercitySettings {
   radiusStepsKm: number[];
   /** Shared rides: departures within ± this many minutes can share a vehicle. */
   sharedWindowMinutes: number;
+  /**
+   * BANJARA's commission, % of the agreed fare, owed by the driver for each completed ride
+   * (riders pay the fare only, in cash, to the driver).
+   */
+  commissionPercent: number;
+  /** A driver owing more than this (PKR) can't take new requests until they pay. */
+  maxDriverDue: number;
+  /** …nor when a ride's commission has been unpaid for more than this many days. */
+  maxDueDays: number;
+  /** Where drivers pay BANJARA. Empty: drivers are told to contact support. */
+  collectionAccounts: Array<{ channel: string; accountTitle: string; accountNumber: string; note?: string }>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -72,6 +83,10 @@ export const DEFAULT_INTERCITY_SETTINGS = {
   matchRadiusKm: 30,
   radiusStepsKm: [10, 20, 30, 50],
   sharedWindowMinutes: 60,
+  commissionPercent: 10,
+  maxDriverDue: 5000,
+  maxDueDays: 7,
+  collectionAccounts: [] as IIntercitySettings['collectionAccounts'],
 } satisfies Omit<IIntercitySettings, '_id' | 'key' | 'createdAt' | 'updatedAt'>;
 
 const perClass = new Schema(
@@ -103,6 +118,23 @@ const intercitySettingsSchema = new Schema<IIntercitySettings>(
     matchRadiusKm: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.matchRadiusKm, min: 0 },
     radiusStepsKm: { type: [Number], default: () => [...DEFAULT_INTERCITY_SETTINGS.radiusStepsKm] },
     sharedWindowMinutes: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.sharedWindowMinutes, min: 0 },
+    commissionPercent: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.commissionPercent, min: 0, max: 100 },
+    maxDriverDue: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.maxDriverDue, min: 0 },
+    maxDueDays: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.maxDueDays, min: 0 },
+    collectionAccounts: {
+      type: [
+        new Schema(
+          {
+            channel: { type: String, required: true },
+            accountTitle: { type: String, required: true, trim: true },
+            accountNumber: { type: String, required: true, trim: true },
+            note: { type: String, trim: true },
+          },
+          { _id: false }
+        ),
+      ],
+      default: () => [],
+    },
   },
   { timestamps: true }
 );
