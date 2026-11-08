@@ -10,11 +10,21 @@ export interface IIntercitySettings {
   _id: Types.ObjectId;
   key: 'default';
   enabled: boolean;
-  /** Fallback fare when no RouteFare matches: base + perKm × km × class multiplier. */
+  /**
+   * Every fare: F = max(minimumFare, baseFare + km × ratePerKm + minutes × ratePerMinute)
+   * × class multiplier, plus the route's tolls and surcharge. Car rates, PKR.
+   * (`ratePerKm` replaced the old `perKm` so a stored pre-formula value is never reused.)
+   */
   baseFare: number;
-  perKm: number;
-  /** Straight-line km × this ≈ road km (mountain roads wind). */
+  ratePerKm: number;
+  /** Drive time prices slow mountain roads that distance alone undercharges. */
+  ratePerMinute: number;
+  /** No car ride costs less than this (before the class multiplier). */
+  minimumFare: number;
+  /** Straight-line km × this ≈ road km (mountain roads wind). Used when a route has no km. */
   roadFactor: number;
+  /** Average speed to estimate drive time when a route has no duration. */
+  fallbackSpeedKmh: number;
   classMultipliers: Record<IntercityClass, number>;
   /** Typical seats per class, used for shared-seat pricing and capacity checks. */
   classSeats: Record<IntercityClass, number>;
@@ -43,8 +53,11 @@ export interface IIntercitySettings {
 export const DEFAULT_INTERCITY_SETTINGS = {
   enabled: true,
   baseFare: 1500,
-  perKm: 45,
+  ratePerKm: 15,
+  ratePerMinute: 10,
+  minimumFare: 3000,
   roadFactor: 1.3,
+  fallbackSpeedKmh: 45,
   classMultipliers: { car: 1, suv: 1.4, jeep: 1.5, van: 1.8, coaster: 2.6 },
   classSeats: { car: 4, suv: 6, jeep: 6, van: 12, coaster: 22 },
   sharedSeatFraction: 0.3,
@@ -71,8 +84,11 @@ const intercitySettingsSchema = new Schema<IIntercitySettings>(
     key: { type: String, enum: ['default'], default: 'default', unique: true },
     enabled: { type: Boolean, default: DEFAULT_INTERCITY_SETTINGS.enabled },
     baseFare: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.baseFare, min: 0 },
-    perKm: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.perKm, min: 0 },
+    ratePerKm: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.ratePerKm, min: 0 },
+    ratePerMinute: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.ratePerMinute, min: 0 },
+    minimumFare: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.minimumFare, min: 0 },
     roadFactor: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.roadFactor, min: 1 },
+    fallbackSpeedKmh: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.fallbackSpeedKmh, min: 5 },
     classMultipliers: { type: perClass, default: () => ({ ...DEFAULT_INTERCITY_SETTINGS.classMultipliers }) },
     classSeats: { type: perClass, default: () => ({ ...DEFAULT_INTERCITY_SETTINGS.classSeats }) },
     sharedSeatFraction: { type: Number, default: DEFAULT_INTERCITY_SETTINGS.sharedSeatFraction, min: 0, max: 1 },

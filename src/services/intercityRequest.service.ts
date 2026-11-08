@@ -116,7 +116,7 @@ async function priceRequest(input: QuoteInput) {
     },
     settings
   );
-  return { settings, from, to, quote, durationMinutes: route?.durationMinutes ?? 0 };
+  return { settings, from, to, quote, durationMinutes: quote.durationMinutes };
 }
 
 /* ------------------------------------------------------------------ */
@@ -146,12 +146,12 @@ export async function listCities() {
 
 export async function quote(input: QuoteInput) {
   await assertIntercityEnabled();
-  const { from, to, quote: fare, durationMinutes } = await priceRequest(input);
+  const { from, to, quote: fare } = await priceRequest(input);
   const pricing = calcPricing(fare.subtotal);
   return {
     fromCity: publicCity(from),
     toCity: publicCity(to),
-    durationMinutes,
+    // Includes durationMinutes: the route's drive time, or an estimate from distance.
     ...fare,
     tax: pricing.tax,
     serviceFee: pricing.serviceFee,

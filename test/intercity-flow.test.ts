@@ -5,6 +5,7 @@ import { Booking } from '../src/models/Booking';
 import { IntercitySettings } from '../src/models/IntercitySettings';
 import { ProviderProfile } from '../src/models/ProviderProfile';
 import { RideRequest } from '../src/models/RideRequest';
+import { RouteFare } from '../src/models/RouteFare';
 import { Trip } from '../src/models/Trip';
 import { Vehicle } from '../src/models/Vehicle';
 import { applyIntercitySeed } from '../src/seed/intercitySeed';
@@ -91,7 +92,27 @@ describe('City to City rides', () => {
     expect((await requestRide(rider)).status).toBe(404);
   });
 
-  it('quotes from the route fare table, detects cities and rejects same-city or unserved pins', async () => {
+  it('keeps rough-road surcharges for jeep tracks only: the seed retires the old sealed-road ones', async () => {
+    expect(await RouteFare.countDocuments({ difficultSurcharge: { $gt: 0 } })).toBe(0);
+    // Islamabad → Gilgit (600 km) still holding the old placeholder Rs 2,000: reset.
+    const stale = await RouteFare.findOneAndUpdate(
+      { vehicleClass: 'car', distanceKm: 600 },
+      { difficultSurcharge: 2000 },
+      { returnDocument: 'after' }
+    );
+    // Gilgit → Hunza (100 km) with a surcharge someone chose (not the old Rs 800): kept.
+    const chosen = await RouteFare.findOneAndUpdate(
+      { vehicleClass: 'jeep', distanceKm: 100 },
+      { difficultSurcharge: 1234 },
+      { returnDocument: 'after' }
+    );
+    const result = await applyIntercitySeed();
+    expect(result.surchargesReset).toBe(1);
+    expect((await RouteFare.findById(stale!._id))?.difficultSurcharge).toBe(0);
+    expect((await RouteFare.findById(chosen!._id))?.difficultSurcharge).toBe(1234);
+  });
+
+  it('quotes with the fare formula on a known route, detects cities and rejects same-city or unserved pins', async () => {
     const quote = await authed(app)
       .post('/api/intercity/quote')
       .send({ pickup: ISLAMABAD, dropoff: GILGIT, vehicleClass: 'car', passengers: 2 });
@@ -102,8 +123,8 @@ describe('City to City rides', () => {
     expect(quote.body.data.toCity.name).toBe('Gilgit');
     expect(quote.body.data.source).toBe('route');
     // Seeded placeholder: 18,000 + 600 tolls + 2,000 mountain surcharge.
-    expect(quote.body.data.subtotal).toBe(20600);
-    expect(quote.body.data.total).toBe(20600 + 2060 + 200);
+    expect(quote.body.data.subtotal).toBe(20700);
+    expect(quote.body.data.total).toBe(20700 + 2070 + 200);
 
     const sameCity = await authed(app)
       .post('/api/intercity/quote')
@@ -127,12 +148,12 @@ describe('City to City rides', () => {
     const created = await requestRide(rider);
     expect(created.status).toBe(201);
     const requestId = created.body.data.id;
-    expect(created.body.data.quote.subtotal).toBe(20600);
+    expect(created.body.data.quote.subtotal).toBe(20700);
 
     // Only the opted-in driver near the pickup city, with a car, sees it — clearly labelled.
     const seen = await feed(near);
     expect(seen.requests).toHaveLength(1);
-    expect(seen.requests[0]).toMatchObject({ route: expect.stringMatching(/Islamabad.*→ Gilgit/), passengers: 2, luggage: { bags: 2, large: 1 }, fare: 20600 });
+    expect(seen.requests[0]).toMatchObject({ route: expect.stringMatching(/Islamabad.*→ Gilgit/), passengers: 2, luggage: { bags: 2, large: 1 }, fare: 20700 });
     // Exact addresses stay private until the ride is booked.
     expect(JSON.stringify(seen.requests[0])).not.toContain('F-7');
     expect((await authed(app, notOptedIn.token).get('/api/intercity/driver/requests')).status).toBe(200);
@@ -163,7 +184,8 @@ describe('City to City rides', () => {
     // The breakdown adds up to what is charged: quote lines + the counter-offer difference.
     const lines = (booking as { fareBreakdown?: { lines: Array<{ code: string; amount: number }> } }).fareBreakdown!.lines;
     expect(lines.reduce((sum, l) => sum + l.amount, 0)).toBe(22000);
-    expect(lines.at(-1)).toMatchObject({ code: 'agreed_price', amount: 1400 });
+    // Counter-offer of 22,000 against the 20,700 quote: the driver asked 1,300 more.
+    expect(lines.at(-1)).toMatchObject({ code: 'agreed_price', amount: 1300 });
     expect(booking?.transportBooking?.intercity).toMatchObject({ pickupAddress: ISLAMABAD.address, dropoffAddress: GILGIT.address, passengers: 2 });
     const trip = await Trip.findById(booking!.transportBooking!.tripId).lean();
     expect(trip).toMatchObject({ rideType: 'intercity', bookingMode: 'vehicle', status: 'scheduled', availableSeats: 0 });
@@ -223,7 +245,7 @@ describe('City to City rides', () => {
       returnTrip: { departAt: inHours(30), waitMode: 'hourly', waitHours: 4 },
     });
     expect(created.status).toBe(201);
-    expect(created.body.data.quote.returnLeg).toBe(20600 + 4 * 500);
+    expect(created.body.data.quote.returnLeg).toBe(20700 + 4 * 500);
     const id = created.body.data.id;
     await authed(app, d.token).post(`/api/intercity/driver/requests/${id}/respond`).send({ action: 'accept' });
     const offerId = (await authed(app, rider.token).get(`/api/intercity/requests/${id}`)).body.data.offers[0].id;
@@ -231,8 +253,8 @@ describe('City to City rides', () => {
 
     const outbound = await Booking.findById(chosen.bookingId).lean();
     const back = await Booking.findById(chosen.returnBookingId).lean();
-    expect(outbound?.subtotal).toBe(20600);
-    expect(back?.subtotal).toBe(20600 + 2000);
+    expect(outbound?.subtotal).toBe(20700);
+    expect(back?.subtotal).toBe(20700 + 2000);
     expect(String(outbound?.returnBookingId)).toBe(chosen.returnBookingId);
     expect(String(back?.outboundBookingId)).toBe(chosen.bookingId);
     const backTrip = await Trip.findById(back!.transportBooking!.tripId).lean();

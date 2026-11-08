@@ -10,8 +10,11 @@ import { RouteFare, type IRouteFare, type IntercityClass } from '../models/Route
 export type FareSettings = Pick<
   IIntercitySettings,
   | 'baseFare'
-  | 'perKm'
+  | 'ratePerKm'
+  | 'ratePerMinute'
+  | 'minimumFare'
   | 'roadFactor'
+  | 'fallbackSpeedKmh'
   | 'classMultipliers'
   | 'sharedSeatFraction'
   | 'waitingPerHour'
@@ -19,7 +22,8 @@ export type FareSettings = Pick<
   | 'bidOnFallback'
 >;
 
-export type FareRoute = Pick<IRouteFare, 'baseFare' | 'distanceKm' | 'tolls' | 'difficultSurcharge' | 'bidEnabled'>;
+/** Route facts used by the formula (the row's stored price, if any, is ignored). */
+export type FareRoute = Pick<IRouteFare, 'distanceKm' | 'durationMinutes' | 'tolls' | 'difficultSurcharge' | 'bidEnabled'>;
 
 export type ReturnWait = { mode: 'hourly'; hours: number } | { mode: 'overnight'; nights: number };
 
@@ -36,14 +40,26 @@ export interface FareInput {
 }
 
 export interface FareLine {
-  code: 'base' | 'distance' | 'tolls' | 'difficult_route' | 'return_leg' | 'waiting' | 'overnight' | 'shared_seats';
+  code:
+    | 'base'
+    | 'distance'
+    | 'time'
+    | 'minimum'
+    | 'tolls'
+    | 'difficult_route'
+    | 'return_leg'
+    | 'waiting'
+    | 'overnight'
+    | 'shared_seats';
   label: string;
   amount: number;
 }
 
 export interface FareQuote {
+  /** Where km and time came from: a known route, or an estimate from straight-line distance. */
   source: 'route' | 'formula';
   distanceKm: number;
+  durationMinutes: number;
   lines: FareLine[];
   /** Outbound leg (incl. its extras). */
   outbound: number;
@@ -66,29 +82,46 @@ export function haversineKm(a: { lat: number; lng: number }, b: { lat: number; l
   return 2 * 6371 * Math.asin(Math.sqrt(h));
 }
 
-/** Pure: the fare for one request. */
+/** "960" -> "16 h", "150" -> "2 h 30 min". */
+function durationLabel(minutes: number) {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h ? (m ? `${h} h ${m} min` : `${h} h`) : `${m} min`;
+}
+
+/**
+ * Pure: the fare for one request.
+ *
+ *   F = max(minimumFare, baseFare + km × ratePerKm + minutes × ratePerMinute) × class + tolls + surcharge
+ *
+ * Road km and drive time come from the route when known, otherwise from the straight-line
+ * distance (× roadFactor) at fallbackSpeedKmh. Each line is rounded to Rs 10 and the fare
+ * is their sum, so the breakdown always adds up to the total.
+ */
 export function computeFare(input: FareInput, settings: FareSettings): FareQuote {
   const multiplier = settings.classMultipliers[input.vehicleClass] ?? 1;
-  const lines: FareLine[] = [];
-  let leg: number;
-  let distanceKm: number;
+  const route = input.route ?? null;
+  const distanceKm = route?.distanceKm || Math.round(input.straightLineKm * settings.roadFactor);
+  const durationMinutes =
+    route?.durationMinutes || Math.round((distanceKm / Math.max(5, settings.fallbackSpeedKmh)) * 60);
 
-  if (input.route) {
-    distanceKm = input.route.distanceKm || Math.round(input.straightLineKm * settings.roadFactor);
-    lines.push({ code: 'base', label: 'Route fare', amount: roundFare(input.route.baseFare) });
-    if (input.route.tolls > 0) lines.push({ code: 'tolls', label: 'Tolls', amount: roundFare(input.route.tolls) });
-    if (input.route.difficultSurcharge > 0) {
-      lines.push({ code: 'difficult_route', label: 'Mountain road surcharge', amount: roundFare(input.route.difficultSurcharge) });
-    }
-    leg = lines.reduce((sum, line) => sum + line.amount, 0);
-  } else {
-    distanceKm = Math.round(input.straightLineKm * settings.roadFactor);
-    const base = roundFare(settings.baseFare);
-    const distance = roundFare(settings.perKm * distanceKm * multiplier);
-    lines.push({ code: 'base', label: 'Base fare', amount: base });
-    lines.push({ code: 'distance', label: `${distanceKm} km`, amount: distance });
-    leg = base + distance;
+  const base = roundFare(settings.baseFare * multiplier);
+  const distance = roundFare(distanceKm * settings.ratePerKm * multiplier);
+  const time = roundFare(durationMinutes * settings.ratePerMinute * multiplier);
+  const lines: FareLine[] = [
+    { code: 'base', label: 'Base fare', amount: base },
+    { code: 'distance', label: `${distanceKm} km`, amount: distance },
+    { code: 'time', label: `About ${durationLabel(durationMinutes)} driving`, amount: time },
+  ];
+  // Short trips still cost the driver most of a day: never go below the minimum fare.
+  const minimum = roundFare(settings.minimumFare * multiplier);
+  const formula = base + distance + time;
+  if (formula < minimum) lines.push({ code: 'minimum', label: 'Minimum fare top-up', amount: minimum - formula });
+  if (route && route.tolls > 0) lines.push({ code: 'tolls', label: 'Tolls', amount: roundFare(route.tolls) });
+  if (route && route.difficultSurcharge > 0) {
+    lines.push({ code: 'difficult_route', label: 'Rough road surcharge', amount: roundFare(route.difficultSurcharge) });
   }
+  const leg = lines.reduce((sum, line) => sum + line.amount, 0);
 
   let returnLeg = 0;
   if (input.returnWait) {
@@ -121,8 +154,9 @@ export function computeFare(input: FareInput, settings: FareSettings): FareQuote
   }
 
   return {
-    source: input.route ? 'route' : 'formula',
+    source: route ? 'route' : 'formula',
     distanceKm,
+    durationMinutes,
     lines,
     outbound,
     returnLeg,
