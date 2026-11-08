@@ -109,6 +109,8 @@ async function transportCards(
     price: { $gt: 0 },
     // A requested date in the past can never match; $eq with $gte yields no rows.
     departureDate: search.date ? { $gte: today, $eq: search.date } : { $gte: today },
+    // A City to City whole-car ride belongs to one rider; it is never for sale.
+    $nor: [{ rideType: 'intercity', bookingMode: 'vehicle' }],
   };
   const destination = search.to || city;
   if (destination) filter.destination = new RegExp(escapeRegex(destination), 'i');

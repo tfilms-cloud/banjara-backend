@@ -331,6 +331,12 @@ export function initSocket(httpServer: HttpServer) {
 
       const speed = Number(payload?.speed);
       const heading = Number(payload?.heading);
+      // City to City trips keep the last known position, so a rider who opens the page
+      // during a signal gap still sees where the car was. Other trips stay relay-only.
+      void Trip.updateOne(
+        { _id: tripId, rideType: 'intercity' },
+        { $set: { lastLocation: { lat: latitude, lng: longitude, at: new Date() } } }
+      ).catch(() => undefined);
       // Emit a constructed object — never spread arbitrary client data into other clients' UI.
       socket.to(`trip:${tripId}`).emit('driverLocationUpdate', {
         tripId,

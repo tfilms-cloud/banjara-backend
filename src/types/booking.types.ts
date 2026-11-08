@@ -48,6 +48,21 @@ export interface TransportBookingDetails {
   pickupPoint?: string;
   dropoffPoint?: string;
   passengerDetails: PassengerDetail[];
+  /** City to City rides: door-to-door details (private to the rider and driver). */
+  intercity?: {
+    rideRequestId: string;
+    leg: 'outbound' | 'return';
+    rideType: 'full_car' | 'shared_seat';
+    pickupAddress: string;
+    pickupLat: number;
+    pickupLng: number;
+    dropoffAddress: string;
+    dropoffLat: number;
+    dropoffLng: number;
+    luggage: { bags: number; large: number };
+    passengers: number;
+    notes?: string;
+  };
 }
 
 export interface HotelBookingDetails {

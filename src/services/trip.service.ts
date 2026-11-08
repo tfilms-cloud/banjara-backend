@@ -334,7 +334,11 @@ const PUBLIC_TRIP_PROVIDER_FIELDS = [
 
 export async function searchTrips(query: Record<string, unknown>) {
   const { page, limit, skip } = getPagination(query);
-  const filter: Record<string, unknown> = { status: { $nin: ['cancelled'] } };
+  const filter: Record<string, unknown> = {
+    status: { $nin: ['cancelled'] },
+    // A City to City whole-car ride belongs to one rider; it is never for sale.
+    $nor: [{ rideType: 'intercity', bookingMode: 'vehicle' }],
+  };
 
   if (query.origin) filter.origin = new RegExp(escapeRegex(String(query.origin)), 'i');
   if (query.destination) filter.destination = new RegExp(escapeRegex(String(query.destination)), 'i');

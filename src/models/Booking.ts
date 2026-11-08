@@ -31,6 +31,15 @@ export interface IBooking {
   ticketQr?: string;
   /** When we last nudged the provider about a still-pending booking. */
   providerReminderSentAt?: Date;
+  /** City to City: how the subtotal was built (route fare, extras, waiting…). */
+  fareBreakdown?: { leg: 'outbound' | 'return'; lines: Array<{ code: string; label: string; amount: number }> };
+  /** City to City round trips: the two legs point at each other. */
+  outboundBookingId?: Types.ObjectId;
+  returnBookingId?: Types.ObjectId;
+  /** e.g. no_show. Set only where a reason is known. */
+  cancellationReason?: string;
+  /** City to City: cancelled by the rider inside the paid window (recorded, not charged yet). */
+  lateCancellation?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -88,6 +97,11 @@ const bookingSchema = new Schema<IBooking>(
     },
     ticketQr: String,
     providerReminderSentAt: { type: Date },
+    fareBreakdown: { type: Schema.Types.Mixed },
+    outboundBookingId: { type: Schema.Types.ObjectId, ref: 'Booking' },
+    returnBookingId: { type: Schema.Types.ObjectId, ref: 'Booking' },
+    cancellationReason: String,
+    lateCancellation: Boolean,
   },
   { timestamps: true }
 );

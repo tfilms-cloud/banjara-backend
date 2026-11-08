@@ -39,6 +39,13 @@ export interface ITrip {
   /** seat = per-seat sales; vehicle = whole-vehicle hire */
   bookingMode: 'seat' | 'vehicle';
   description?: string;
+  /** scheduled = a driver-published trip (all existing trips); intercity = a City to City ride. */
+  rideType?: 'scheduled' | 'intercity';
+  rideRequestId?: Types.ObjectId;
+  /** City to City only. Rider addresses are never stored here (trips are public). */
+  intercity?: { fromCityId: Types.ObjectId; toCityId: Types.ObjectId; departAt: Date; leg: 'outbound' | 'return' };
+  /** Last known driver position (City to City tracking). */
+  lastLocation?: { lat: number; lng: number; at: Date; speed?: number; heading?: number };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -102,10 +109,33 @@ const tripSchema = new Schema<ITrip>(
       index: true,
     },
     description: String,
+    rideType: { type: String, enum: ['scheduled', 'intercity'], default: 'scheduled' },
+    rideRequestId: { type: Schema.Types.ObjectId, ref: 'RideRequest' },
+    intercity: {
+      type: new Schema(
+        {
+          fromCityId: { type: Schema.Types.ObjectId, ref: 'City' },
+          toCityId: { type: Schema.Types.ObjectId, ref: 'City' },
+          departAt: Date,
+          leg: { type: String, enum: ['outbound', 'return'] },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
+    lastLocation: {
+      type: new Schema({ lat: Number, lng: Number, at: Date, speed: Number, heading: Number }, { _id: false }),
+      default: undefined,
+    },
   },
   { timestamps: true }
 );
 
 tripSchema.index({ origin: 1, destination: 1, departureDate: 1 });
+// City to City: shared-seat lookups and a driver's upcoming rides.
+tripSchema.index(
+  { 'intercity.fromCityId': 1, 'intercity.toCityId': 1, 'intercity.departAt': 1 },
+  { partialFilterExpression: { rideType: 'intercity' } }
+);
 
 export const Trip = mongoose.model<ITrip>('Trip', tripSchema);

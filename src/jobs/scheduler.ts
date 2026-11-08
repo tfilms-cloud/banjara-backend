@@ -3,6 +3,7 @@ import { log } from '../utils/logger';
 import * as bookingService from '../services/booking.service';
 import * as paymentService from '../services/payment.service';
 import { cleanupRemovedMedia } from '../services/mediaDeletion.service';
+import { expireOpenRequests } from '../services/intercityRequest.service';
 
 let timer: ReturnType<typeof setInterval> | null = null;
 let running = false;
@@ -11,13 +12,18 @@ async function tick() {
   if (running) return;
   running = true;
   try {
-    const [expired, reminders, media] = await Promise.all([
+    const [expired, reminders, media, rideRequests] = await Promise.all([
       paymentService.expireStalePayments(),
       bookingService.sendPendingBookingReminders(),
       cleanupRemovedMedia(),
+      // City to City: a no-op while the feature is switched off.
+      expireOpenRequests().catch((err) => {
+        log().error({ err }, '[jobs] intercity expiry failed');
+        return 0;
+      }),
     ]);
 
-    if (expired.expired > 0 || reminders.reminded > 0 || media.deleted > 0) {
+    if (expired.expired > 0 || reminders.reminded > 0 || media.deleted > 0 || rideRequests > 0) {
       log().info(
         {
           expiredPayments: expired.expired,
@@ -25,6 +31,7 @@ async function tick() {
           pendingReminders: reminders.reminded,
           pendingScanned: reminders.scanned,
           deletedPhotos: media.deleted,
+          expiredRideRequests: rideRequests,
         },
         '[jobs] tick complete'
       );

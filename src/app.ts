@@ -37,6 +37,7 @@ import serviceCatalogRoutes from './routes/serviceCatalog.routes';
 import guideRoutes from './routes/guide.routes';
 import discoverRoutes from './routes/discover.routes';
 import verificationRoutes from './routes/verification.routes';
+import intercityRoutes from './routes/intercity.routes';
 
 export function createApp() {
   const app = express();
@@ -156,6 +157,7 @@ export function createApp() {
   app.use('/api/admin', adminRoutes);
   app.use('/api/tour-itineraries', tourItineraryRoutes);
   app.use('/api/services', serviceCatalogRoutes);
+  app.use('/api/intercity', intercityRoutes);
   app.use('/api/guides', guideRoutes);
   app.use('/api/discover', discoverRoutes);
   app.use('/api/verification', verificationRoutes);

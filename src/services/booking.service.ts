@@ -23,6 +23,7 @@ import { isP2PMethod } from '../types/payment.types';
 import * as notificationService from './notification.service';
 import * as serviceCatalogService from './serviceCatalog.service';
 import * as guideService from './guide.service';
+import { getIntercitySettings, isLateCancellation } from './intercityFare.service';
 import {
   confirmTripSeats,
   releaseTripSeats,
@@ -32,7 +33,8 @@ import {
 
 export { recomputeTripSeatCounters };
 
-function calcPricing(subtotal: number, discount = 0) {
+/** Tax + service fee on any subtotal (all booking types, incl. City to City). */
+export function calcPricing(subtotal: number, discount = 0) {
   const tax = Math.round(subtotal * env.TAX_RATE);
   const serviceFee = env.SERVICE_FEE;
   const totalAmount = Math.max(0, subtotal + tax + serviceFee - discount);
@@ -698,17 +700,46 @@ export async function sendPendingBookingReminders(olderThanMinutes = env.PENDING
   return { scanned: pending.length, reminded };
 }
 
+type IntercityCancelHook = (
+  booking: Record<string, unknown>,
+  requester: { id: string; role: string; providerId?: string },
+  reason?: string
+) => Promise<void>;
+let intercityCancelHook: IntercityCancelHook | null = null;
+
+/** intercityRequest.service registers its follow-up here (it imports this module). */
+export function registerIntercityCancelHook(hook: IntercityCancelHook) {
+  intercityCancelHook = hook;
+}
+
 export async function cancelBooking(
   id: string,
   requester: { id: string; role: string; providerId?: string },
-  options?: { replaced?: boolean; silent?: boolean }
+  options?: { replaced?: boolean; silent?: boolean; reason?: string }
 ) {
   await getBooking(id, requester); // Authorization before beginning a transaction.
+  let intercity = false;
+  let alreadyClosed = false;
   const booking = await paymentTransaction(async session => {
     const current = assertFound(await Booking.findById(id).session(session), 'Booking not found');
-    if (['cancelled', 'expired'].includes(current.bookingStatus)) return current;
+    if (['cancelled', 'expired'].includes(current.bookingStatus)) {
+      alreadyClosed = true;
+      return current;
+    }
     if (current.bookingStatus === 'completed') throw new AppError('Completed bookings cannot be cancelled', 400);
     current.bookingStatus = 'cancelled';
+    // City to City only: record why, and whether the rider cancelled inside the paid window.
+    if (current.bookingType === 'transport' && current.transportBooking?.intercity) {
+      const trip = await Trip.findById(current.transportBooking.tripId).select('rideType intercity').session(session).lean();
+      if (trip?.rideType === 'intercity') {
+        intercity = true;
+        const settings = await getIntercitySettings();
+        current.cancellationReason = options?.reason ?? (requester.role === 'provider' ? 'driver_cancelled' : requester.role === 'customer' ? 'rider_cancelled' : 'cancelled');
+        if (requester.role === 'customer') {
+          current.lateCancellation = isLateCancellation(trip.intercity?.departAt, settings.freeCancelMinutes);
+        }
+      }
+    }
     if (current.paymentId) {
       const payment = await paymentService.refundPaymentAsSystem(current.paymentId.toString(), session);
       current.paymentStatus = payment.status;
@@ -723,6 +754,14 @@ export async function cancelBooking(
     await current.save({ session });
     return current;
   });
+
+  // City to City: the other leg of a round trip, the trip itself, and re-matching when
+  // the driver cancelled. (Loaded lazily: that module depends on this one.)
+  if (intercity && !alreadyClosed && intercityCancelHook) {
+    await intercityCancelHook(booking.toObject() as unknown as Record<string, unknown>, requester, options?.reason).catch((err: unknown) => {
+      log().error({ bookingId: id, err }, '[intercity] after-cancel follow-up failed');
+    });
+  }
 
   // Seat-hold replacement: no cancel push — a new booking notification follows.
   if (options?.silent || options?.replaced) {

@@ -20,7 +20,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "seed:intercity": "tsx src/seed/intercitySeed.ts"
   },
   "keywords": [
     "banjara",

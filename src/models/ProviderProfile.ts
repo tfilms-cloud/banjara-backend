@@ -192,6 +192,12 @@ export interface IProviderProfile {
    * Admin can set a different rate per service provider.
    */
   platformFeePercent?: number;
+  intercity?: {
+    enabled: boolean;
+    homeCityId?: Types.ObjectId;
+    preferredRoutes: Array<{ fromCityId: Types.ObjectId; toCityId: Types.ObjectId }>;
+    acceptsShared: boolean;
+  };
   createdAt: Date;
   updatedAt: Date;
 }
@@ -426,6 +432,30 @@ const providerSchema = new Schema<IProviderProfile>(
     },
     /** BANJARA cut % — e.g. 0.2 means 0.2% of provider booking revenue */
     platformFeePercent: { type: Number, default: 0.2, min: 0, max: 100 },
+    /** City to City opt-in (drivers). Absent = not opted in. */
+    intercity: {
+      type: new Schema(
+        {
+          enabled: { type: Boolean, default: false },
+          homeCityId: { type: Schema.Types.ObjectId, ref: 'City' },
+          preferredRoutes: {
+            type: [
+              new Schema(
+                {
+                  fromCityId: { type: Schema.Types.ObjectId, ref: 'City' },
+                  toCityId: { type: Schema.Types.ObjectId, ref: 'City' },
+                },
+                { _id: false }
+              ),
+            ],
+            default: [],
+          },
+          acceptsShared: { type: Boolean, default: false },
+        },
+        { _id: false }
+      ),
+      default: undefined,
+    },
   },
   { timestamps: true }
 );

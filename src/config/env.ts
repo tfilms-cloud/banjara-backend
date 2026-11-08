@@ -58,6 +58,15 @@ const envSchema = z.object({
   JOBS_INTERVAL_MS: z.coerce.number().default(60_000),
   /** Minutes a booking stays pending before the provider gets a reminder. */
   PENDING_BOOKING_REMINDER_MINUTES: z.coerce.number().default(10),
+  /**
+   * City to City rides. Hard kill switch (off unless set); the runtime on/off and all
+   * prices and windows live in the IntercitySettings document.
+   */
+  INTERCITY_ENABLED: z
+    .string()
+    .optional()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1'),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -178,4 +187,5 @@ export const env = parsed.success
       JOBS_ENABLED: true,
       JOBS_INTERVAL_MS: 60_000,
       PENDING_BOOKING_REMINDER_MINUTES: 10,
+      INTERCITY_ENABLED: false,
     } as z.infer<typeof envSchema>);
