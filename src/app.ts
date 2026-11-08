@@ -36,6 +36,7 @@ import tourItineraryRoutes from './routes/tourItinerary.routes';
 import serviceCatalogRoutes from './routes/serviceCatalog.routes';
 import guideRoutes from './routes/guide.routes';
 import discoverRoutes from './routes/discover.routes';
+import directionsRoutes from './routes/directions.routes';
 import verificationRoutes from './routes/verification.routes';
 import intercityRoutes from './routes/intercity.routes';
 
@@ -160,6 +161,7 @@ export function createApp() {
   app.use('/api/intercity', intercityRoutes);
   app.use('/api/guides', guideRoutes);
   app.use('/api/discover', discoverRoutes);
+  app.use('/api/directions', directionsRoutes);
   app.use('/api/verification', verificationRoutes);
   app.use('/api/uploads', uploadRoutes);
 

@@ -45,6 +45,11 @@ const envSchema = z.object({
   TAX_RATE: z.coerce.number().default(0.1),
   SERVICE_FEE: z.coerce.number().default(200),
   GEOCODER_USER_AGENT: z.string().optional().default('BanjaraApp/1.0 (support@banjara.app)'),
+  /**
+   * Driving directions (OSRM). The public demo server is fine for development but not for
+   * production traffic: point this at your own OSRM server (or a hosted one) before launch.
+   */
+  OSRM_URL: z.string().url().optional().default('https://router.project-osrm.org'),
   /** auto | tesseract | http — OCR secrets never belong in the Expo app */
   OCR_PROVIDER: z.enum(['auto', 'tesseract', 'http', 'mock']).optional().default('auto'),
   OCR_API_KEY: z.string().optional().default(''),
@@ -181,6 +186,7 @@ export const env = parsed.success
       TAX_RATE: 0.1,
       SERVICE_FEE: 200,
       GEOCODER_USER_AGENT: 'BanjaraApp/1.0 (support@banjara.app)',
+      OSRM_URL: 'https://router.project-osrm.org',
       OCR_PROVIDER: 'auto',
       OCR_API_KEY: process.env.OCR_API_KEY ?? '',
       OCR_API_URL: process.env.OCR_API_URL ?? 'https://api.ocr.space/parse/image',
